@@ -1,0 +1,7 @@
+C:\Users\CHfamily\OneDrive\jair\proyecto entrega inventario 
+
+docker compose up -d
+
+docker compose down
+ 
+file:///C:/Users/CHfamily/OneDrive/jair/proyecto%20entrega%20inventario/frontend/index.html

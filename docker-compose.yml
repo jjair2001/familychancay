@@ -1,0 +1,31 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    container_name: familychancay_db
+    environment:
+      POSTGRES_DB: familychancay
+      POSTGRES_USER: chancay
+      POSTGRES_PASSWORD: chancay_123
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./database:/docker-entrypoint-initdb.d
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - fc_net
+
+  backend:
+    build: ./backend
+    container_name: familychancay_api
+    ports:
+      - "5000:5000"
+    depends_on:
+      - postgres
+    networks:
+      - fc_net
+
+volumes:
+  pgdata:
+networks:
+  fc_net:
