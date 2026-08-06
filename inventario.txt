@@ -5,3 +5,6 @@ docker compose up -d
 docker compose down
  
 file:///C:/Users/CHfamily/OneDrive/jair/proyecto%20entrega%20inventario/frontend/index.html
+
+
+ahora creame una pagina de todo esto con imagenes profecional tienda para realizar con compas pago numero de celular 0987599583 que al precionar se valla al ese numero los menajes de quiero infromacion , un diseño interesante interactivo pon ropa accesorios etc 
