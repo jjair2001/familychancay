@@ -638,6 +638,111 @@ def crear_venta():
 
 
 # ============================================================
+#  PEDIDOS WEB  (endpoint que usa el frontend Netlify)
+# ============================================================
+@app.route('/api/pedidos', methods=['POST', 'OPTIONS'])
+def crear_pedido_web():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+
+    d   = request.get_json(silent=True) or {}
+    cur = conn.cursor()
+
+    try:
+        # ---- Datos del cliente ----
+        nombre    = (d.get('cliente')  or 'Cliente Web').strip()
+        telefono  = (d.get('telefono') or '').strip()
+        direccion = (d.get('direccion') or '').strip()
+        ciudad    = (d.get('ciudad')    or '').strip()
+        provincia = (d.get('provincia') or '').strip()
+        pago      = (d.get('metodo_pago') or 'TRANSFERENCIA').upper()
+        items     = d.get('items') or d.get('productos') or []
+
+        if not items:
+            return jsonify({"error": "Carrito vacío"}), 400
+
+        # ---- 1. Buscar o crear cliente ----
+        cliente_id = None
+        if tabla_existe(cur, 'clientes'):
+            if telefono:
+                cur.execute("SELECT cliente_id FROM clientes WHERE telefono=%s LIMIT 1", (telefono,))
+                r = cur.fetchone()
+                if r: cliente_id = r['cliente_id']
+
+            if not cliente_id:
+                cols   = columnas_de(cur, 'clientes')
+                campos = ["nombres", "estado"]
+                vals   = [nombre, True]
+                if 'apellidos' in cols: campos.append("apellidos"); vals.append("Web")
+                if 'telefono'  in cols: campos.append("telefono");  vals.append(telefono)
+                if 'direccion' in cols: campos.append("direccion"); vals.append(f"{direccion}, {ciudad}, {provincia}".strip(", "))
+                if 'correo'    in cols: campos.append("correo");    vals.append("")
+                ph = ', '.join(['%s']*len(vals))
+                cur.execute(f"INSERT INTO clientes ({','.join(campos)}) VALUES ({ph}) RETURNING cliente_id", vals)
+                cliente_id = cur.fetchone()['cliente_id']
+
+        # ---- 2. Método de pago ----
+        metodo_id = 1
+        if tabla_existe(cur, 'metodos_pago'):
+            cur.execute("SELECT metodo_pago_id FROM metodos_pago WHERE UPPER(nombre_metodo) LIKE %s LIMIT 1", (f"%{pago}%",))
+            r = cur.fetchone()
+            if r: metodo_id = r['metodo_pago_id']
+
+        # ---- 3. Total ----
+        total = sum(float(it.get('precio') or 0) * int(it.get('cantidad') or 1) for it in items)
+
+        # ---- 4. Insertar venta ----
+        num = f"WEB-{int(time.time())}"
+        cols_v = columnas_de(cur, 'ventas')
+        cv, vv = ["numero_venta","total","estado_venta","fecha_venta"], [num, total, 'PENDIENTE', datetime.now()]
+        if 'cliente_id'     in cols_v and cliente_id: cv.append("cliente_id");     vv.append(cliente_id)
+        if 'sucursal_id'    in cols_v: cv.append("sucursal_id");    vv.append(1)
+        if 'empleado_id'    in cols_v: cv.append("empleado_id");    vv.append(1)
+        if 'metodo_pago_id' in cols_v: cv.append("metodo_pago_id"); vv.append(metodo_id)
+        if 'subtotal'       in cols_v: cv.append("subtotal");       vv.append(total)
+        if 'descuento'      in cols_v: cv.append("descuento");      vv.append(0)
+        ph = ', '.join(['%s']*len(vv))
+        cur.execute(f"INSERT INTO ventas ({','.join(cv)}) VALUES ({ph}) RETURNING venta_id", vv)
+        venta_id = cur.fetchone()['venta_id']
+
+        # ---- 5. Detalles + descontar stock ----
+        if tabla_existe(cur, 'detalle_ventas'):
+            cols_dv = columnas_de(cur, 'detalle_ventas')
+            for it in items:
+                pu  = float(it.get('precio') or 0)
+                cant= int(it.get('cantidad') or 1)
+                pid = it.get('producto_id') or it.get('id')
+                vid = it.get('variante_id')
+                cd, vd = ["venta_id","cantidad","precio_unitario","subtotal"], [venta_id, cant, pu, pu*cant]
+                if 'producto_id' in cols_dv and pid: cd.append("producto_id"); vd.append(pid)
+                if 'variante_id' in cols_dv and vid: cd.append("variante_id"); vd.append(vid)
+                ph = ', '.join(['%s']*len(vd))
+                try:
+                    cur.execute(f"INSERT INTO detalle_ventas ({','.join(cd)}) VALUES ({ph})", vd)
+                except Exception as e:
+                    print(f"⚠️ Detalle falló: {e}")
+                if pid and tabla_existe(cur, 'inventario'):
+                    try:
+                        cur.execute("UPDATE inventario SET stock_actual=GREATEST(stock_actual-%s,0) WHERE producto_id=%s", (cant, pid))
+                    except Exception:
+                        pass
+
+        conn.commit()
+        return jsonify({"status":"ok","venta_id":venta_id,"numero_venta":num,"total":total}), 201
+
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error pedido web: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close(); conn.close()
+
+
+# ============================================================
 #  CLIENTES
 # ============================================================
 @app.route('/api/clientes', methods=['GET'])
