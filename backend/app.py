@@ -1,3 +1,12 @@
+# -*- coding: utf-8 -*-
+"""
+============================================================
+  API BACKEND – CHANCAY SPORTS
+  Flask + PostgreSQL
+  Compatible con: Docker, Render, Railway, Local
+============================================================
+"""
+
 import os
 import time
 import random
@@ -12,224 +21,255 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2 import errors as pg_errors
 
+# ============================================================
+#  CONFIGURACIÓN DE LA APLICACIÓN
+# ============================================================
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB límite subida
+CORS(app, resources={r"/api/*": {"origins": "*"}, r"/login": {"origins": "*"}})
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB límite
 
 
+# ============================================================
+#  CONEXIÓN A BASE DE DATOS
+# ============================================================
 def get_db():
     """
     Establece conexión con PostgreSQL.
-    Prioriza DATABASE_URL (Producción) y hace fallback a local (Docker).
+    1) Intenta DATABASE_URL  (producción)
+    2) Fallback local        (Docker / desarrollo)
     """
     db_url = os.environ.get('DATABASE_URL')
-    
-    # Configuración base
-    config_base = {
+
+    base = {
         'cursor_factory': RealDictCursor,
-        'connect_timeout': 5
+        'connect_timeout': 10,
     }
 
-    # 1. Intento con DATABASE_URL (Render, Heroku, Railway, etc.)
+    # ---------- 1. Producción ----------
     if db_url:
         u = urlparse(db_url)
-        host = u.hostname
-        port = u.port or 5432
-        dbname = (u.path or '').lstrip('/')
-        
-        # Resolución IPv4 explícita para evitar timeouts en DNS de algunos proveedores
+        host    = u.hostname
+        port    = u.port or 5432
+        dbname  = (u.path or '').lstrip('/')
+
+        # Resolución IPv4 explícita (evita timeouts DNS)
         ip4 = None
         try:
             infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-            if infos: 
+            if infos:
                 ip4 = infos[0][4][0]
         except Exception:
             pass
 
         estrategias = []
         if ip4:
-            # Estrategia 1: Host + Hostaddr (Máxima compatibilidad)
-            estrategias.append(dict(host=host, hostaddr=ip4, port=port, user=u.username, password=u.password, dbname=dbname, sslmode='require'))
-            # Estrategia 2: Solo IP directa
-            estrategias.append(dict(host=ip4, port=port, user=u.username, password=u.password, dbname=dbname, sslmode='require'))
-        
-        # Estrategia 3: Configuración original URL
-        estrategias.append(dict(host=host, port=port, user=u.username, password=u.password, dbname=dbname, sslmode='require'))
+            estrategias.append(dict(host=host, hostaddr=ip4, port=port,
+                                    user=u.username, password=u.password,
+                                    dbname=dbname, sslmode='require'))
+            estrategias.append(dict(host=ip4, port=port,
+                                    user=u.username, password=u.password,
+                                    dbname=dbname, sslmode='require'))
+        estrategias.append(dict(host=host, port=port,
+                                user=u.username, password=u.password,
+                                dbname=dbname, sslmode='require'))
 
-        for i, kwargs in enumerate(estrategias):
+        for i, kw in enumerate(estrategias):
             try:
-                conn = psycopg2.connect(**{**config_base, **kwargs})
-                return conn
+                return psycopg2.connect(**{**base, **kw})
             except Exception as e:
-                print(f"⚠️ Intento DB {i+1} falló: {e}")
-                continue
-        
-        print("❌ ERROR: No se pudo conectar a DATABASE_URL tras todos los intentos.")
+                print(f"⚠️  Intento DB {i+1} falló: {e}")
+        print("❌ ERROR: no se pudo conectar a DATABASE_URL.")
         return None
 
-    # 2. Fallback Local (Docker / Desarrollo)
+    # ---------- 2. Local (Docker) ----------
     try:
         return psycopg2.connect(
-            host="postgres", 
+            host="postgres",
             database="familychancay",
-            user="chancay", 
+            user="chancay",
             password="chancay_123",
-            **config_base
+            **base
         )
     except Exception as e:
         print(f"❌ ERROR DB Local: {e}")
         return None
 
 
+# ============================================================
+#  UTILIDADES
+# ============================================================
 def serializar(rows):
-    """Convierte tipos Postgres (Decimal, Date) a tipos JSON serializables."""
+    """Convierte Decimal / datetime / date → tipos JSON."""
     if not rows:
         return []
     out = []
     for row in rows:
         d = dict(row)
         for k, v in d.items():
-            if isinstance(v, Decimal): 
+            if isinstance(v, Decimal):
                 d[k] = float(v)
-            elif isinstance(v, datetime): 
+            elif isinstance(v, datetime):
                 d[k] = v.strftime('%Y-%m-%d %H:%M:%S')
-            elif isinstance(v, date): 
+            elif isinstance(v, date):
                 d[k] = v.strftime('%Y-%m-%d')
-            # Manejo de booleanos para consistencia JSON
-            elif isinstance(v, bool):
-                d[k] = v 
         out.append(d)
     return out
 
 
 def tabla_existe(cur, tabla):
-    """Verifica si una tabla existe en la BD."""
+    """Verifica si una tabla existe."""
     try:
-        cur.execute("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=%s)", (tabla,))
+        cur.execute(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=%s)",
+            (tabla,)
+        )
         return cur.fetchone()['exists']
-    except:
+    except Exception:
         return False
 
 
 def columnas_de(cur, tabla):
-    """Obtiene lista de columnas de una tabla de forma segura."""
+    """Lista de columnas de una tabla (lista vacía si no existe)."""
     if not tabla_existe(cur, tabla):
         return []
     try:
-        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s", (tabla,))
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name=%s",
+            (tabla,)
+        )
         return [r['column_name'] for r in cur.fetchall()]
-    except:
+    except Exception:
         return []
 
 
-def init_schema():
-    """Asegura que existan columnas críticas agregadas recientemente."""
-    conn = get_db()
-    if not conn: 
-        print("⚠️ No se pudo inicializar schema (DB Down)")
-        return
-    
-    cur = conn.cursor()
-    try:
-        # Verificar y agregar columnas si faltan
-        if tabla_existe(cur, 'productos'):
-            cur.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen TEXT;")
-        
-        if tabla_existe(cur, 'inventario'):
-            cur.execute("ALTER TABLE inventario ADD COLUMN IF NOT EXISTS stock_actual INT DEFAULT 0;")
-            
-        conn.commit()
-        print("✅ Schema verificado/actualizado correctamente")
-    except Exception as e:
-        print(f"⚠️ Error en init_schema: {e}")
-        conn.rollback()
-    finally:
-        cur.close()
-        conn.close()
-
-
 def guardar_inventario(cur, sucursal_id, producto_id, variante_id, stock):
-    """Inserta inventario probando diferentes esquemas de tabla."""
+    """Inserta inventario probando varios esquemas."""
     queries = [
-        # Esquema completo con variante
-        ("INSERT INTO inventario (sucursal_id, producto_id, variante_id, stock_actual, stock_minimo, ubicacion_fisica) VALUES (%s,%s,%s,%s,5,%s)",
+        ("INSERT INTO inventario (sucursal_id,producto_id,variante_id,stock_actual,stock_minimo,ubicacion_fisica) "
+         "VALUES (%s,%s,%s,%s,5,%s)",
          (sucursal_id, producto_id, variante_id, stock, f'Estante-A-{producto_id}')),
-        # Esquema sin variante
-        ("INSERT INTO inventario (sucursal_id, producto_id, stock_actual, stock_minimo, ubicacion_fisica) VALUES (%s,%s,%s,5,%s)",
+
+        ("INSERT INTO inventario (sucursal_id,producto_id,stock_actual,stock_minimo,ubicacion_fisica) "
+         "VALUES (%s,%s,%s,5,%s)",
          (sucursal_id, producto_id, stock, f'Estante-A-{producto_id}')),
-        # Esquema alternativo solo variante
-        ("INSERT INTO inventario (sucursal_id, variante_id, stock_actual, stock_minimo, ubicacion_fisica) VALUES (%s,%s,%s,5,%s)",
+
+        ("INSERT INTO inventario (sucursal_id,variante_id,stock_actual,stock_minimo,ubicacion_fisica) "
+         "VALUES (%s,%s,%s,5,%s)",
          (sucursal_id, variante_id, stock, f'Estante-A-{producto_id}')),
     ]
-    
     for sql, args in queries:
         try:
             cur.execute(sql, args)
             return True
         except pg_errors.ForeignKeyViolation:
-            continue  # Probar siguiente esquema
+            continue
         except Exception:
             continue
     return False
 
 
 def actualizar_inventario(cur, producto_id, variante_id, stock):
-    """Actualiza stock existente o crea registro si no existe."""
+    """Actualiza stock existente o crea registro."""
     try:
-        # Intentar actualizar por producto_id
-        cur.execute("UPDATE inventario SET stock_actual=%s WHERE producto_id=%s", (stock, producto_id))
-        
-        # Si no actualizó nada y hay variante_id, intentar por variante
+        cur.execute("UPDATE inventario SET stock_actual=%s WHERE producto_id=%s",
+                    (stock, producto_id))
         if cur.rowcount == 0 and variante_id:
-            cur.execute("UPDATE inventario SET stock_actual=%s WHERE variante_id=%s", (stock, variante_id))
-            
-        # Si sigue sin actualizar, intentar insertar
+            cur.execute("UPDATE inventario SET stock_actual=%s WHERE variante_id=%s",
+                        (stock, variante_id))
         if cur.rowcount == 0:
             guardar_inventario(cur, 1, producto_id, variante_id, stock)
     except Exception as e:
-        print(f"⚠️ Error actualizando inventario: {e}")
+        print(f"⚠️  Error actualizando inventario: {e}")
 
 
-# ==================== ENDPOINTS ====================
+def obtener_stock(cur, pid):
+    """Obtiene stock de un producto de forma segura."""
+    if not tabla_existe(cur, 'inventario'):
+        return 0
+    cols = columnas_de(cur, 'inventario')
+    try:
+        if 'producto_id' in cols and 'stock_actual' in cols:
+            cur.execute("SELECT COALESCE(SUM(stock_actual),0) AS stock FROM inventario WHERE producto_id=%s", (pid,))
+            r = cur.fetchone()
+            return int(r['stock']) if r else 0
+    except Exception:
+        pass
+    return 0
 
+
+# ============================================================
+#  INICIALIZACIÓN DE SCHEMA
+# ============================================================
+def init_schema():
+    """Asegura que existan columnas críticas."""
+    conn = get_db()
+    if not conn:
+        print("⚠️  No se pudo inicializar schema (DB Down)")
+        return
+    cur = conn.cursor()
+    try:
+        if tabla_existe(cur, 'productos'):
+            cur.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen TEXT;")
+        if tabla_existe(cur, 'inventario'):
+            cur.execute("ALTER TABLE inventario ADD COLUMN IF NOT EXISTS stock_actual INT DEFAULT 0;")
+        conn.commit()
+        print("✅ Schema verificado / actualizado correctamente")
+    except Exception as e:
+        print(f"⚠️  Error en init_schema: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ============================================================
+#  ENDPOINTS – SALUD Y LOGIN
+# ============================================================
 @app.route('/api/health', methods=['GET'])
 def health():
     conn = get_db()
     ok = conn is not None
-    if conn: 
+    if conn:
         conn.close()
-    return jsonify({"status": "ok" if ok else "db_down", "timestamp": datetime.now().isoformat()})
+    return jsonify({
+        "status": "ok" if ok else "db_down",
+        "timestamp": datetime.now().isoformat()
+    })
 
 
 @app.route('/login', methods=['POST'])
 def login():
-    data = request.json or {}
-    # Credenciales hardcodeadas para demo (usar hash en producción)
+    data = request.get_json(silent=True) or {}
     if data.get('user') == 'chancay' and data.get('pass') == 'chancay_123':
         return jsonify({"status": "success", "user": "chancay"})
     return jsonify({"status": "error", "message": "Credenciales inválidas"}), 401
 
 
+# ============================================================
+#  CATÁLOGOS
+# ============================================================
 @app.route('/api/catalogos', methods=['GET'])
 def get_catalogos():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-    
     cur = conn.cursor()
     try:
-        cats = []
-        marcas = []
-        
+        cats, marcas, sucursales = [], [], []
+
         if tabla_existe(cur, 'categorias'):
-            cur.execute("SELECT categoria_id, nombre FROM categorias WHERE estado=True ORDER BY categoria_id")
+            cur.execute("SELECT categoria_id, nombre FROM categorias WHERE estado=TRUE ORDER BY categoria_id")
             cats = serializar(cur.fetchall())
-            
+
         if tabla_existe(cur, 'marcas'):
-            cur.execute("SELECT marca_id, nombre FROM marcas WHERE estado=True ORDER BY marca_id")
+            cur.execute("SELECT marca_id, nombre FROM marcas WHERE estado=TRUE ORDER BY marca_id")
             marcas = serializar(cur.fetchall())
-            
-        return jsonify({"categorias": cats, "marcas": marcas})
+
+        if tabla_existe(cur, 'sucursales'):
+            cur.execute("SELECT sucursal_id, nombre FROM sucursales WHERE estado=TRUE ORDER BY sucursal_id")
+            sucursales = serializar(cur.fetchall())
+
+        return jsonify({"categorias": cats, "marcas": marcas, "sucursales": sucursales})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -237,34 +277,41 @@ def get_catalogos():
         conn.close()
 
 
+# ============================================================
+#  PRODUCTOS  (CRUD)
+# ============================================================
 @app.route('/api/productos', methods=['GET'])
 def get_productos():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-        
+
     categoria = request.args.get('categoria', '')
-    busqueda = request.args.get('q', '')
+    busqueda  = request.args.get('q', '')
     cur = conn.cursor()
-    
-    query = """SELECT DISTINCT ON (p.producto_id)
-            p.producto_id, p.codigo_producto, p.nombre, p.precio_venta_base,
-            c.nombre as categoria, m.nombre as marca, p.estado, p.imagen
-        FROM productos p 
-        LEFT JOIN categorias c ON p.categoria_id=c.categoria_id
-        LEFT JOIN marcas m ON p.marca_id=m.marca_id 
-        WHERE p.estado = True"""
-        
+
+    query = """
+        SELECT DISTINCT ON (p.producto_id)
+               p.producto_id, p.codigo_producto, p.nombre,
+               p.precio_venta_base, c.nombre AS categoria,
+               m.nombre AS marca, p.estado, p.imagen
+        FROM productos p
+        LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+        LEFT JOIN marcas m     ON p.marca_id     = m.marca_id
+        WHERE p.estado = TRUE
+    """
     params = []
+
     if categoria and categoria.lower() != 'todos':
         query += " AND LOWER(c.nombre) = LOWER(%s)"
         params.append(categoria)
+
     if busqueda:
         query += " AND (p.nombre ILIKE %s OR p.codigo_producto ILIKE %s)"
         params.extend([f"%{busqueda}%", f"%{busqueda}%"])
-        
+
     query += " ORDER BY p.producto_id ASC LIMIT 200"
-    
+
     try:
         cur.execute(query, params)
         return jsonify(serializar(cur.fetchall()))
@@ -279,50 +326,41 @@ def get_productos():
 @app.route('/api/productos/<int:pid>', methods=['GET'])
 def get_producto(pid):
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-    
     cur = conn.cursor()
     try:
-        cur.execute("""SELECT p.producto_id, p.codigo_producto, p.nombre, p.descripcion,
-               p.precio_venta_base, p.categoria_id, p.marca_id, p.imagen,
-               c.nombre as categoria, m.nombre as marca
-            FROM productos p 
-            LEFT JOIN categorias c ON p.categoria_id=c.categoria_id
-            LEFT JOIN marcas m ON p.marca_id=m.marca_id 
-            WHERE p.producto_id=%s""", (pid,))
-            
+        cur.execute("""
+            SELECT p.producto_id, p.codigo_producto, p.nombre, p.descripcion,
+                   p.precio_venta_base, p.categoria_id, p.marca_id, p.imagen,
+                   c.nombre AS categoria, m.nombre AS marca
+            FROM productos p
+            LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+            LEFT JOIN marcas m     ON p.marca_id     = m.marca_id
+            WHERE p.producto_id = %s
+        """, (pid,))
+
         p = cur.fetchone()
-        if not p: 
+        if not p:
             return jsonify({"error": "Producto no encontrado"}), 404
-            
+
         d = serializar([p])[0]
-        d['talla'] = ''
-        d['color'] = ''
+        d['talla']       = ''
+        d['color']       = ''
         d['variante_id'] = None
-        d['stock'] = 0
-        
-        # Buscar variante si la tabla existe
+        d['stock']       = obtener_stock(cur, pid)
+
+        # Variante (si existe tabla)
         if tabla_existe(cur, 'producto_variantes'):
             cols = columnas_de(cur, 'producto_variantes')
             if 'producto_id' in cols:
                 cur.execute("SELECT variante_id, talla, color FROM producto_variantes WHERE producto_id=%s LIMIT 1", (pid,))
                 v = cur.fetchone()
                 if v:
-                    d['talla'] = v.get('talla', '')
-                    d['color'] = v.get('color', '')
+                    d['talla']       = v.get('talla', '') or ''
+                    d['color']       = v.get('color', '') or ''
                     d['variante_id'] = v.get('variante_id')
-        
-        # Buscar stock
-        if tabla_existe(cur, 'inventario'):
-            try:
-                cur.execute("SELECT stock_actual FROM inventario WHERE producto_id=%s LIMIT 1", (pid,))
-                r = cur.fetchone()
-                if r and r.get('stock_actual') is not None: 
-                    d['stock'] = int(r['stock_actual'])
-            except:
-                pass
-            
+
         return jsonify(d)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -334,47 +372,53 @@ def get_producto(pid):
 @app.route('/api/productos', methods=['POST'])
 def crear_producto():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-        
-    d = request.json or {}
-    codigo = (d.get('codigo') or '').strip() or f"AUTO-{int(time.time())}{random.randint(10,99)}"
+
+    d = request.get_json(silent=True) or {}
     nombre = (d.get('nombre') or '').strip()
-    
-    if not nombre: 
+    if not nombre:
         return jsonify({"error": "El nombre es obligatorio"}), 400
-        
-    cat_id = int(d.get('categoria_id') or 1)
-    mar_id = int(d.get('marca_id') or 1)
-    precio = float(d.get('precio') or 0)
-    talla = (d.get('talla') or '').strip() or 'U'
-    color = (d.get('color') or '').strip() or 'N/A'
-    stock = int(d.get('stock') or 0)
-    imagen = d.get('imagen') or None
-    desc = d.get('descripcion') or ''
-    
+
+    codigo  = (d.get('codigo') or '').strip() or f"AUTO-{int(time.time())}{random.randint(10, 99)}"
+    cat_id  = int(d.get('categoria_id') or 1)
+    mar_id  = int(d.get('marca_id') or 1)
+    precio  = float(d.get('precio') or 0)
+    talla   = (d.get('talla') or '').strip() or 'U'
+    color   = (d.get('color') or '').strip() or 'N/A'
+    stock   = int(d.get('stock') or 0)
+    imagen  = d.get('imagen') or None
+    desc    = d.get('descripcion') or ''
+
     cur = conn.cursor()
     try:
-        cur.execute("""INSERT INTO productos (categoria_id, marca_id, codigo_producto, nombre, descripcion, precio_venta_base, iva, imagen, estado)
-            VALUES (%s,%s,%s,%s,%s,%s,18,%s,True) RETURNING producto_id""",
-            (cat_id, mar_id, codigo, nombre, desc, precio, imagen))
-            
+        cur.execute("""
+            INSERT INTO productos (categoria_id, marca_id, codigo_producto, nombre,
+                                   descripcion, precio_venta_base, iva, imagen, estado)
+            VALUES (%s,%s,%s,%s,%s,%s,18,%s,TRUE)
+            RETURNING producto_id
+        """, (cat_id, mar_id, codigo, nombre, desc, precio, imagen))
         pid = cur.fetchone()['producto_id']
+
         sku = f"{codigo}-{talla}-{color}"
         vid = None
-        
+
         if tabla_existe(cur, 'producto_variantes'):
             cols = columnas_de(cur, 'producto_variantes')
             if 'producto_id' in cols:
-                cur.execute("""INSERT INTO producto_variantes (producto_id, sku, talla, color, modelo, anio, genero, equipo, temporada, tipo_uniforme, precio, estado)
-                    VALUES (%s,%s,%s,%s,%s,'2026','Unisex','N/A','2026','General',%s,True) RETURNING variante_id""",
-                    (pid, sku, talla, color, nombre, precio))
+                cur.execute("""
+                    INSERT INTO producto_variantes
+                        (producto_id, sku, talla, color, modelo,
+                         anio, genero, equipo, temporada, tipo_uniforme, precio, estado)
+                    VALUES (%s,%s,%s,%s,%s,'2026','Unisex','N/A','2026','General',%s,TRUE)
+                    RETURNING variante_id
+                """, (pid, sku, talla, color, nombre, precio))
                 vid = cur.fetchone()['variante_id']
-            
+
         guardar_inventario(cur, 1, pid, vid, stock)
         conn.commit()
         return jsonify({"status": "ok", "producto_id": pid}), 201
-        
+
     except pg_errors.UniqueViolation:
         conn.rollback()
         return jsonify({"error": f"El código '{codigo}' ya existe."}), 400
@@ -390,45 +434,42 @@ def crear_producto():
 @app.route('/api/productos/<int:pid>', methods=['PUT'])
 def actualizar_producto(pid):
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-        
-    d = request.json or {}
+
+    d   = request.get_json(silent=True) or {}
     cur = conn.cursor()
     try:
         sets, params = [], []
-        if 'nombre' in d: sets.append("nombre=%s"); params.append(d['nombre'])
-        if 'precio' in d: sets.append("precio_venta_base=%s"); params.append(float(d['precio']))
-        if 'categoria_id' in d: sets.append("categoria_id=%s"); params.append(int(d['categoria_id']))
-        if 'marca_id' in d: sets.append("marca_id=%s"); params.append(int(d['marca_id']))
-        if 'descripcion' in d: sets.append("descripcion=%s"); params.append(d['descripcion'])
-        if 'imagen' in d: sets.append("imagen=%s"); params.append(d['imagen'])
-        
+        if 'nombre'       in d: sets.append("nombre=%s");             params.append(d['nombre'])
+        if 'precio'       in d: sets.append("precio_venta_base=%s");  params.append(float(d['precio']))
+        if 'categoria_id' in d: sets.append("categoria_id=%s");       params.append(int(d['categoria_id']))
+        if 'marca_id'     in d: sets.append("marca_id=%s");           params.append(int(d['marca_id']))
+        if 'descripcion'  in d: sets.append("descripcion=%s");        params.append(d['descripcion'])
+        if 'imagen'       in d: sets.append("imagen=%s");             params.append(d['imagen'])
+
         if sets:
             params.append(pid)
             cur.execute(f"UPDATE productos SET {', '.join(sets)} WHERE producto_id=%s", params)
-            
-        talla = d.get('talla')
-        color = d.get('color')
-        precio = d.get('precio')
-        vid = None
-        
+
+        # Variante
+        talla, color, precio_v, vid = d.get('talla'), d.get('color'), d.get('precio'), None
         if tabla_existe(cur, 'producto_variantes'):
             cur.execute("SELECT variante_id FROM producto_variantes WHERE producto_id=%s LIMIT 1", (pid,))
             vr = cur.fetchone()
             if vr:
-                vsets, vparams = [], []
-                if talla is not None: vsets.append("talla=%s"); vparams.append(talla)
-                if color is not None: vsets.append("color=%s"); vparams.append(color)
-                if precio is not None: vsets.append("precio=%s"); vparams.append(float(precio))
-                if vsets:
-                    vparams.append(vr['variante_id'])
-                    cur.execute(f"UPDATE producto_variantes SET {', '.join(vsets)} WHERE variante_id=%s", vparams)
                 vid = vr['variante_id']
-                
-        if 'stock' in d: 
+                vsets, vparams = [], []
+                if talla    is not None: vsets.append("talla=%s");  vparams.append(talla)
+                if color    is not None: vsets.append("color=%s");  vparams.append(color)
+                if precio_v is not None: vsets.append("precio=%s"); vparams.append(float(precio_v))
+                if vsets:
+                    vparams.append(vid)
+                    cur.execute(f"UPDATE producto_variantes SET {', '.join(vsets)} WHERE variante_id=%s", vparams)
+
+        if 'stock' in d:
             actualizar_inventario(cur, pid, vid, int(d['stock']))
-            
+
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -443,11 +484,11 @@ def actualizar_producto(pid):
 @app.route('/api/productos/<int:pid>', methods=['DELETE'])
 def eliminar_producto(pid):
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE productos SET estado=False WHERE producto_id=%s", (pid,))
+        cur.execute("UPDATE productos SET estado=FALSE WHERE producto_id=%s", (pid,))
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -458,45 +499,49 @@ def eliminar_producto(pid):
         conn.close()
 
 
+# ============================================================
+#  VENTAS
+# ============================================================
 @app.route('/api/ventas', methods=['GET'])
 def get_ventas():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-        
-    busqueda = request.args.get('q', '')
+
+    busqueda  = request.args.get('q', '')
     fecha_ini = request.args.get('fecha_inicio', '')
     fecha_fin = request.args.get('fecha_fin', '')
     cur = conn.cursor()
-    
-    # Verificar tablas necesarias
-    tablas_necesarias = ['ventas', 'clientes', 'empleados', 'metodos_pago']
-    if not all(tabla_existe(cur, t) for t in tablas_necesarias):
+
+    tablas = ['ventas', 'clientes', 'empleados', 'metodos_pago']
+    if not all(tabla_existe(cur, t) for t in tablas):
         return jsonify([])
-    
-    query = """SELECT v.numero_venta, v.fecha_venta, v.total, v.estado_venta,
-               cl.nombres || ' ' || cl.apellidos as cliente, 
-               e.nombres || ' ' || e.apellidos as vendedor,
-               mp.nombre_metodo as metodo_pago
-        FROM ventas v 
-        JOIN clientes cl ON v.cliente_id = cl.cliente_id
-        JOIN empleados e ON v.empleado_id = e.empleado_id 
-        JOIN metodos_pago mp ON v.metodo_pago_id = mp.metodo_pago_id
-        WHERE v.estado_venta = 'COMPLETADA'"""
-        
+
+    query = """
+        SELECT v.numero_venta, v.fecha_venta, v.total, v.estado_venta,
+               cl.nombres || ' ' || cl.apellidos AS cliente,
+               e.nombres  || ' ' || e.apellidos  AS vendedor,
+               mp.nombre_metodo                   AS metodo_pago
+        FROM ventas v
+        JOIN clientes cl      ON v.cliente_id      = cl.cliente_id
+        JOIN empleados e      ON v.empleado_id     = e.empleado_id
+        JOIN metodos_pago mp  ON v.metodo_pago_id  = mp.metodo_pago_id
+        WHERE v.estado_venta = 'COMPLETADA'
+    """
     params = []
+
     if busqueda:
-        query += " AND (v.numero_venta ILIKE %s OR cl.nombres ILIKE %s)"
-        params.extend([f"%{busqueda}%", f"%{busqueda}%"])
-    if fecha_ini: 
+        query += " AND (v.numero_venta ILIKE %s OR cl.nombres ILIKE %s OR cl.apellidos ILIKE %s)"
+        params.extend([f"%{busqueda}%", f"%{busqueda}%", f"%{busqueda}%"])
+    if fecha_ini:
         query += " AND v.fecha_venta >= %s"
         params.append(fecha_ini)
-    if fecha_fin: 
+    if fecha_fin:
         query += " AND v.fecha_venta <= %s"
         params.append(fecha_fin + ' 23:59:59')
-        
+
     query += " ORDER BY v.fecha_venta DESC LIMIT 100"
-    
+
     try:
         cur.execute(query, params)
         return jsonify(serializar(cur.fetchall()))
@@ -508,37 +553,189 @@ def get_ventas():
         conn.close()
 
 
+@app.route('/api/ventas', methods=['POST'])
+def crear_venta():
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+
+    d = request.get_json(silent=True) or {}
+    cur = conn.cursor()
+
+    try:
+        cliente_id     = int(d.get('cliente_id') or 1)
+        empleado_id    = int(d.get('empleado_id') or 1)
+        metodo_pago_id = int(d.get('metodo_pago_id') or 1)
+        sucursal_id    = int(d.get('sucursal_id') or 1)
+        detalles       = d.get('detalles') or []
+
+        if not detalles:
+            return jsonify({"error": "Se requiere al menos un detalle de producto"}), 400
+
+        numero_venta = f"V-{int(time.time())}{random.randint(100, 999)}"
+        total = 0.0
+
+        # Calcular total
+        for det in detalles:
+            precio_det = float(det.get('precio') or 0)
+            cantidad   = int(det.get('cantidad') or 1)
+            total += precio_det * cantidad
+
+        # Insertar venta
+        cols_ventas = columnas_de(cur, 'ventas')
+        sql_v = """INSERT INTO ventas (numero_venta, cliente_id, empleado_id,
+                   metodo_pago_id, sucursal_id, total, estado_venta, fecha_venta)
+                   VALUES (%s,%s,%s,%s,%s,%s,'COMPLETADA', NOW())
+                   RETURNING venta_id"""
+        cur.execute(sql_v, (numero_venta, cliente_id, empleado_id,
+                            metodo_pago_id, sucursal_id, total))
+        venta_id = cur.fetchone()['venta_id']
+
+        # Insertar detalles y descontar stock
+        cols_dv = columnas_de(cur, 'detalle_ventas')
+        for det in detalles:
+            producto_id = int(det.get('producto_id') or 0)
+            variante_id = det.get('variante_id') or None
+            cantidad    = int(det.get('cantidad') or 1)
+            precio_u    = float(det.get('precio') or 0)
+            subtotal    = precio_u * cantidad
+
+            if 'venta_id' in cols_dv and 'producto_id' in cols_dv:
+                sql_d = """INSERT INTO detalle_ventas
+                           (venta_id, producto_id, variante_id, cantidad, precio_unitario, subtotal)
+                           VALUES (%s,%s,%s,%s,%s,%s)"""
+                try:
+                    cur.execute(sql_d, (venta_id, producto_id, variante_id, cantidad, precio_u, subtotal))
+                except Exception:
+                    # Fallback sin variante_id
+                    sql_d2 = """INSERT INTO detalle_ventas
+                                (venta_id, producto_id, cantidad, precio_unitario, subtotal)
+                                VALUES (%s,%s,%s,%s,%s)"""
+                    cur.execute(sql_d2, (venta_id, producto_id, cantidad, precio_u, subtotal))
+
+            # Descontar stock
+            try:
+                cur.execute("""UPDATE inventario
+                               SET stock_actual = GREATEST(stock_actual - %s, 0)
+                               WHERE producto_id = %s""", (cantidad, producto_id))
+                if cur.rowcount == 0 and variante_id:
+                    cur.execute("""UPDATE inventario
+                                   SET stock_actual = GREATEST(stock_actual - %s, 0)
+                                   WHERE variante_id = %s""", (cantidad, variante_id))
+            except Exception:
+                pass
+
+        conn.commit()
+        return jsonify({"status": "ok", "venta_id": venta_id, "numero_venta": numero_venta, "total": total}), 201
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Error crear venta: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ============================================================
+#  CLIENTES
+# ============================================================
+@app.route('/api/clientes', methods=['GET'])
+def get_clientes():
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+    cur = conn.cursor()
+    try:
+        if not tabla_existe(cur, 'clientes'):
+            return jsonify([])
+        cols = columnas_de(cur, 'clientes')
+        campos = "cliente_id, nombres, apellidos"
+        if 'telefono' in cols:
+            campos += ", telefono"
+        if 'correo' in cols:
+            campos += ", correo"
+        if 'cedula_ruc' in cols:
+            campos += ", cedula_ruc"
+        cur.execute(f"SELECT {campos} FROM clientes WHERE estado=TRUE ORDER BY nombres LIMIT 200")
+        return jsonify(serializar(cur.fetchall()))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route('/api/clientes', methods=['POST'])
+def crear_cliente():
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+    d = request.get_json(silent=True) or {}
+    nombres = (d.get('nombres') or '').strip()
+    if not nombres:
+        return jsonify({"error": "El nombre es obligatorio"}), 400
+    cur = conn.cursor()
+    try:
+        cols = columnas_de(cur, 'clientes')
+        campos  = "nombres, apellidos, estado"
+        valores = [nombres, (d.get('apellidos') or ''), True]
+
+        if 'cedula_ruc' in cols:
+            campos += ", cedula_ruc";   valores.append(d.get('cedula_ruc') or '')
+        if 'telefono' in cols:
+            campos += ", telefono";      valores.append(d.get('telefono') or '')
+        if 'correo' in cols:
+            campos += ", correo";        valores.append(d.get('correo') or '')
+        if 'direccion' in cols:
+            campos += ", direccion";     valores.append(d.get('direccion') or '')
+
+        placeholders = ', '.join(['%s'] * len(valores))
+        cur.execute(f"INSERT INTO clientes ({campos}) VALUES ({placeholders}) RETURNING cliente_id", valores)
+        cid = cur.fetchone()['cliente_id']
+        conn.commit()
+        return jsonify({"status": "ok", "cliente_id": cid}), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ============================================================
+#  EMPLEADOS
+# ============================================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-    
     cur = conn.cursor()
     try:
         if not tabla_existe(cur, 'empleados'):
             return jsonify([])
-            
-        has_roles = tabla_existe(cur, 'roles')
+
+        has_roles     = tabla_existe(cur, 'roles')
         has_sucursales = tabla_existe(cur, 'sucursales')
-        
-        query = "SELECT e.codigo_empleado, e.nombres, e.apellidos, e.telefono, e.correo"
+
+        query = "SELECT e.empleado_id, e.codigo_empleado, e.nombres, e.apellidos, e.telefono, e.correo"
         joins = ""
-        
+
         if has_roles:
-            query += ", r.nombre_rol as rol"
-            joins += " JOIN roles r ON e.rol_id=r.rol_id"
+            query += ", r.nombre_rol AS rol"
+            joins += " JOIN roles r ON e.rol_id = r.rol_id"
         else:
-            query += ", NULL as rol"
-            
+            query += ", NULL AS rol"
+
         if has_sucursales:
-            query += ", s.nombre as sucursal"
-            joins += " JOIN sucursales s ON e.sucursal_id=s.sucursal_id"
+            query += ", s.nombre AS sucursal"
+            joins += " JOIN sucursales s ON e.sucursal_id = s.sucursal_id"
         else:
-            query += ", NULL as sucursal"
-            
-        query += f" FROM empleados e {joins} WHERE e.estado=True ORDER BY e.empleado_id"
-        
+            query += ", NULL AS sucursal"
+
+        query += f" FROM empleados e {joins} WHERE e.estado=TRUE ORDER BY e.empleado_id"
+
         cur.execute(query)
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
@@ -548,17 +745,26 @@ def get_empleados():
         conn.close()
 
 
+# ============================================================
+#  PROVEEDORES
+# ============================================================
 @app.route('/api/proveedores', methods=['GET'])
 def get_proveedores():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-    
     cur = conn.cursor()
     try:
         if not tabla_existe(cur, 'proveedores'):
             return jsonify([])
-        cur.execute("SELECT ruc_dni, razon_social, contacto_nombre, telefono, correo, direccion FROM proveedores WHERE estado=True")
+        cols = columnas_de(cur, 'proveedores')
+        campos = []
+        for c in ['proveedor_id', 'ruc_dni', 'razon_social', 'contacto_nombre', 'telefono', 'correo', 'direccion']:
+            if c in cols:
+                campos.append(c)
+        if not campos:
+            return jsonify([])
+        cur.execute(f"SELECT {', '.join(campos)} FROM proveedores WHERE estado=TRUE ORDER BY 1 LIMIT 200")
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -567,34 +773,54 @@ def get_proveedores():
         conn.close()
 
 
+# ============================================================
+#  SUCURSALES
+# ============================================================
+@app.route('/api/sucursales', methods=['GET'])
+def get_sucursales():
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+    cur = conn.cursor()
+    try:
+        if not tabla_existe(cur, 'sucursales'):
+            return jsonify([])
+        cur.execute("SELECT sucursal_id, nombre, direccion, telefono FROM sucursales WHERE estado=TRUE ORDER BY sucursal_id")
+        return jsonify(serializar(cur.fetchall()))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ============================================================
+#  ESTADÍSTICAS
+# ============================================================
 @app.route('/api/estadisticas/kpis', methods=['GET'])
 def get_kpis():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-    
     cur = conn.cursor()
     try:
-        total_ventas = 0
-        ingresos = 0
-        clientes = 0
-        productos = 0
-        
+        total_ventas, ingresos, clientes, productos = 0, 0.0, 0, 0
+
         if tabla_existe(cur, 'ventas'):
-            cur.execute("SELECT COUNT(*) as c, COALESCE(SUM(total),0) as s FROM ventas WHERE estado_venta='COMPLETADA'")
+            cur.execute("SELECT COUNT(*) AS c, COALESCE(SUM(total),0) AS s FROM ventas WHERE estado_venta='COMPLETADA'")
             r = cur.fetchone()
             total_ventas = r['c']
-            ingresos = float(r['s'])
-            
-            cur.execute("SELECT COUNT(DISTINCT cliente_id) as c FROM ventas")
+            ingresos     = float(r['s'])
+
+            cur.execute("SELECT COUNT(DISTINCT cliente_id) AS c FROM ventas")
             clientes = cur.fetchone()['c']
-            
+
         if tabla_existe(cur, 'productos'):
-            cur.execute("SELECT COUNT(*) as c FROM productos WHERE estado=True")
+            cur.execute("SELECT COUNT(*) AS c FROM productos WHERE estado=TRUE")
             productos = cur.fetchone()['c']
-            
+
         return jsonify({
-            "total_ventas": total_ventas,
+            "total_ventas":     total_ventas,
             "ingresos_totales": ingresos,
             "clientes_activos": clientes,
             "productos_activos": productos
@@ -609,18 +835,23 @@ def get_kpis():
 @app.route('/api/estadisticas/ventas-mes', methods=['GET'])
 def get_ventas_mes():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-    
     cur = conn.cursor()
     try:
         if not tabla_existe(cur, 'ventas'):
             return jsonify([])
-            
-        cur.execute("""SELECT TO_CHAR(fecha_venta,'YYYY-MM') as mes, COUNT(*) as cantidad_ventas,
-               SUM(total) as total_facturado, AVG(total) as ticket_promedio
-               FROM ventas WHERE estado_venta='COMPLETADA'
-               GROUP BY TO_CHAR(fecha_venta,'YYYY-MM') ORDER BY mes DESC LIMIT 6""")
+        cur.execute("""
+            SELECT TO_CHAR(fecha_venta,'YYYY-MM') AS mes,
+                   COUNT(*)                          AS cantidad_ventas,
+                   SUM(total)                        AS total_facturado,
+                   COALESCE(AVG(total),0)            AS ticket_promedio
+            FROM ventas
+            WHERE estado_venta = 'COMPLETADA'
+            GROUP BY TO_CHAR(fecha_venta,'YYYY-MM')
+            ORDER BY mes DESC
+            LIMIT 6
+        """)
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -632,38 +863,45 @@ def get_ventas_mes():
 @app.route('/api/estadisticas/top-productos', methods=['GET'])
 def get_top_productos():
     conn = get_db()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "DB Down"}), 503
-        
     cur = conn.cursor()
     try:
         if not tabla_existe(cur, 'detalle_ventas'):
             return jsonify([])
-            
+
         cols = columnas_de(cur, 'detalle_ventas')
-        
+
         if 'producto_id' in cols:
-            cur.execute("""SELECT p.nombre as producto, c.nombre as categoria, m.nombre as marca,
-                   SUM(dv.cantidad) as unidades_vendidas, SUM(dv.subtotal) as total_generado
-                   FROM detalle_ventas dv 
-                   JOIN productos p ON dv.producto_id=p.producto_id
-                   LEFT JOIN categorias c ON p.categoria_id=c.categoria_id 
-                   LEFT JOIN marcas m ON p.marca_id=m.marca_id
-                   GROUP BY p.nombre,c.nombre,m.nombre 
-                   ORDER BY unidades_vendidas DESC LIMIT 10""")
+            cur.execute("""
+                SELECT p.nombre AS producto, c.nombre AS categoria, m.nombre AS marca,
+                       SUM(dv.cantidad) AS unidades_vendidas,
+                       SUM(dv.subtotal) AS total_generado
+                FROM detalle_ventas dv
+                JOIN productos p      ON dv.producto_id  = p.producto_id
+                LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+                LEFT JOIN marcas m     ON p.marca_id     = m.marca_id
+                GROUP BY p.nombre, c.nombre, m.nombre
+                ORDER BY unidades_vendidas DESC
+                LIMIT 10
+            """)
         elif 'variante_id' in cols:
-            cur.execute("""SELECT p.nombre as producto, c.nombre as categoria, m.nombre as marca,
-                   SUM(dv.cantidad) as unidades_vendidas, SUM(dv.subtotal) as total_generado
-                   FROM detalle_ventas dv 
-                   JOIN producto_variantes pv ON dv.variante_id=pv.variante_id
-                   JOIN productos p ON pv.producto_id=p.producto_id
-                   LEFT JOIN categorias c ON p.categoria_id=c.categoria_id 
-                   LEFT JOIN marcas m ON p.marca_id=m.marca_id
-                   GROUP BY p.nombre,c.nombre,m.nombre 
-                   ORDER BY unidades_vendidas DESC LIMIT 10""")
+            cur.execute("""
+                SELECT p.nombre AS producto, c.nombre AS categoria, m.nombre AS marca,
+                       SUM(dv.cantidad) AS unidades_vendidas,
+                       SUM(dv.subtotal) AS total_generado
+                FROM detalle_ventas dv
+                JOIN producto_variantes pv ON dv.variante_id  = pv.variante_id
+                JOIN productos p           ON pv.producto_id  = p.producto_id
+                LEFT JOIN categorias c     ON p.categoria_id  = c.categoria_id
+                LEFT JOIN marcas m         ON p.marca_id      = m.marca_id
+                GROUP BY p.nombre, c.nombre, m.nombre
+                ORDER BY unidades_vendidas DESC
+                LIMIT 10
+            """)
         else:
             return jsonify([])
-            
+
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
         print(f"Error Top Productos: {e}")
@@ -673,10 +911,13 @@ def get_top_productos():
         conn.close()
 
 
-# Inicialización al arrancar
+# ============================================================
+#  ARRANQUE
+# ============================================================
 with app.app_context():
     init_schema()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+    app.run(host='0.0.0.0', port=port, debug=debug)
