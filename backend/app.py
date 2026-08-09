@@ -11,6 +11,7 @@ import os
 import time
 import random
 import socket
+import traceback
 from urllib.parse import urlparse
 from datetime import datetime, date
 from decimal import Decimal
@@ -639,6 +640,7 @@ def crear_venta():
 
 # ============================================================
 #  PEDIDOS WEB  (endpoint que usa el frontend Netlify)
+#  Versión tolerante: solo usa las columnas que realmente existen
 # ============================================================
 @app.route('/api/pedidos', methods=['POST', 'OPTIONS'])
 def crear_pedido_web():
@@ -653,7 +655,6 @@ def crear_pedido_web():
     cur = conn.cursor()
 
     try:
-        # ---- Datos del cliente ----
         nombre    = (d.get('cliente')  or 'Cliente Web').strip()
         telefono  = (d.get('telefono') or '').strip()
         direccion = (d.get('direccion') or '').strip()
@@ -665,61 +666,85 @@ def crear_pedido_web():
         if not items:
             return jsonify({"error": "Carrito vacío"}), 400
 
-        # ---- 1. Buscar o crear cliente ----
+        # ---- 1. Cliente (tolerante a columnas) ----
         cliente_id = None
         if tabla_existe(cur, 'clientes'):
-            if telefono:
-                cur.execute("SELECT cliente_id FROM clientes WHERE telefono=%s LIMIT 1", (telefono,))
-                r = cur.fetchone()
-                if r: cliente_id = r['cliente_id']
+            cols_c = columnas_de(cur, 'clientes')
+
+            # Buscar por teléfono si existe la columna
+            if telefono and 'telefono' in cols_c:
+                try:
+                    cur.execute("SELECT cliente_id FROM clientes WHERE telefono=%s LIMIT 1", (telefono,))
+                    r = cur.fetchone()
+                    if r: cliente_id = r['cliente_id']
+                except Exception:
+                    pass
 
             if not cliente_id:
-                cols   = columnas_de(cur, 'clientes')
-                campos = ["nombres", "estado"]
-                vals   = [nombre, True]
-                if 'apellidos' in cols: campos.append("apellidos"); vals.append("Web")
-                if 'telefono'  in cols: campos.append("telefono");  vals.append(telefono)
-                if 'direccion' in cols: campos.append("direccion"); vals.append(f"{direccion}, {ciudad}, {provincia}".strip(", "))
-                if 'correo'    in cols: campos.append("correo");    vals.append("")
-                ph = ', '.join(['%s']*len(vals))
-                cur.execute(f"INSERT INTO clientes ({','.join(campos)}) VALUES ({ph}) RETURNING cliente_id", vals)
-                cliente_id = cur.fetchone()['cliente_id']
+                campos, vals = [], []
+                if 'nombres' in cols_c:    campos.append("nombres");    vals.append(nombre)
+                elif 'nombre' in cols_c:   campos.append("nombre");     vals.append(nombre)
+                if 'apellidos' in cols_c:  campos.append("apellidos");  vals.append("Web")
+                if 'apellido' in cols_c:   campos.append("apellido");   vals.append("Web")
+                if 'dni_ruc' in cols_c:    campos.append("dni_ruc");    vals.append(telefono or f"WEB{int(time.time())}")
+                if 'cedula_ruc' in cols_c: campos.append("cedula_ruc"); vals.append(telefono or f"WEB{int(time.time())}")
+                if 'telefono' in cols_c:   campos.append("telefono");   vals.append(telefono)
+                if 'correo' in cols_c:     campos.append("correo");     vals.append("")
+                if 'email' in cols_c:      campos.append("email");      vals.append("")
+                if 'direccion' in cols_c:  campos.append("direccion");  vals.append(f"{direccion}, {ciudad}, {provincia}".strip(", "))
+                if 'estado' in cols_c:     campos.append("estado");     vals.append(True)
+
+                if campos:
+                    ph = ', '.join(['%s']*len(vals))
+                    cur.execute(f"INSERT INTO clientes ({','.join(campos)}) VALUES ({ph}) RETURNING cliente_id", vals)
+                    cliente_id = cur.fetchone()['cliente_id']
 
         # ---- 2. Método de pago ----
         metodo_id = 1
         if tabla_existe(cur, 'metodos_pago'):
-            cur.execute("SELECT metodo_pago_id FROM metodos_pago WHERE UPPER(nombre_metodo) LIKE %s LIMIT 1", (f"%{pago}%",))
-            r = cur.fetchone()
-            if r: metodo_id = r['metodo_pago_id']
+            try:
+                cur.execute("SELECT metodo_pago_id FROM metodos_pago WHERE UPPER(nombre_metodo) LIKE %s LIMIT 1", (f"%{pago}%",))
+                r = cur.fetchone()
+                if r: metodo_id = r['metodo_pago_id']
+            except Exception:
+                pass
 
         # ---- 3. Total ----
         total = sum(float(it.get('precio') or 0) * int(it.get('cantidad') or 1) for it in items)
 
-        # ---- 4. Insertar venta ----
+        # ---- 4. Venta (tolerante) ----
         num = f"WEB-{int(time.time())}"
         cols_v = columnas_de(cur, 'ventas')
-        cv, vv = ["numero_venta","total","estado_venta","fecha_venta"], [num, total, 'PENDIENTE', datetime.now()]
+        cv, vv = [], []
+        if 'numero_venta'   in cols_v: cv.append("numero_venta");   vv.append(num)
+        if 'fecha_venta'    in cols_v: cv.append("fecha_venta");    vv.append(datetime.now())
+        if 'total'          in cols_v: cv.append("total");          vv.append(total)
+        if 'subtotal'       in cols_v: cv.append("subtotal");       vv.append(total)
+        if 'descuento'      in cols_v: cv.append("descuento");      vv.append(0)
+        if 'estado_venta'   in cols_v: cv.append("estado_venta");   vv.append('PENDIENTE')
         if 'cliente_id'     in cols_v and cliente_id: cv.append("cliente_id");     vv.append(cliente_id)
         if 'sucursal_id'    in cols_v: cv.append("sucursal_id");    vv.append(1)
         if 'empleado_id'    in cols_v: cv.append("empleado_id");    vv.append(1)
         if 'metodo_pago_id' in cols_v: cv.append("metodo_pago_id"); vv.append(metodo_id)
-        if 'subtotal'       in cols_v: cv.append("subtotal");       vv.append(total)
-        if 'descuento'      in cols_v: cv.append("descuento");      vv.append(0)
+
         ph = ', '.join(['%s']*len(vv))
         cur.execute(f"INSERT INTO ventas ({','.join(cv)}) VALUES ({ph}) RETURNING venta_id", vv)
         venta_id = cur.fetchone()['venta_id']
 
-        # ---- 5. Detalles + descontar stock ----
+        # ---- 5. Detalles + stock ----
         if tabla_existe(cur, 'detalle_ventas'):
             cols_dv = columnas_de(cur, 'detalle_ventas')
             for it in items:
-                pu  = float(it.get('precio') or 0)
-                cant= int(it.get('cantidad') or 1)
-                pid = it.get('producto_id') or it.get('id')
-                vid = it.get('variante_id')
-                cd, vd = ["venta_id","cantidad","precio_unitario","subtotal"], [venta_id, cant, pu, pu*cant]
+                pu   = float(it.get('precio') or 0)
+                cant = int(it.get('cantidad') or 1)
+                pid  = it.get('producto_id') or it.get('id')
+                vid  = it.get('variante_id')
+                cd, vd = ["venta_id"], [venta_id]
                 if 'producto_id' in cols_dv and pid: cd.append("producto_id"); vd.append(pid)
                 if 'variante_id' in cols_dv and vid: cd.append("variante_id"); vd.append(vid)
+                if 'cantidad' in cols_dv:        cd.append("cantidad");        vd.append(cant)
+                if 'precio_unitario' in cols_dv: cd.append("precio_unitario"); vd.append(pu)
+                if 'subtotal' in cols_dv:        cd.append("subtotal");        vd.append(pu*cant)
                 ph = ', '.join(['%s']*len(vd))
                 try:
                     cur.execute(f"INSERT INTO detalle_ventas ({','.join(cd)}) VALUES ({ph})", vd)
@@ -737,9 +762,11 @@ def crear_pedido_web():
     except Exception as e:
         conn.rollback()
         print(f"❌ Error pedido web: {e}")
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
 
 # ============================================================
