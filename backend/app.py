@@ -101,7 +101,6 @@ def init_schema():
         if tabla_existe(cur, 'productos'): cur.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen TEXT;")
         if tabla_existe(cur, 'inventario'): cur.execute("ALTER TABLE inventario ADD COLUMN IF NOT EXISTS stock_actual INT DEFAULT 0;")
         cur.execute("""CREATE TABLE IF NOT EXISTS usuarios (usuario_id SERIAL PRIMARY KEY, nombre VARCHAR(150) NOT NULL, email VARCHAR(150) UNIQUE NOT NULL, password VARCHAR(255) NOT NULL, fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP, estado BIT DEFAULT B'1')""")
-        # Asegurar columnas de empleados (horario, sueldo, tipo)
         if tabla_existe(cur, 'empleados'):
             for col, tipo in [('horario','VARCHAR(100)'), ('sueldo','DECIMAL(12,2)'), ('tipo_empleado','VARCHAR(50)'), ('fecha_ingreso','DATE')]:
                 cur.execute(f"ALTER TABLE empleados ADD COLUMN IF NOT EXISTS {col} {tipo};")
