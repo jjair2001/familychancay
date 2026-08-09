@@ -2,8 +2,7 @@
 """
 ============================================================
   API BACKEND – CHANCAY SPORTS
-  Flask + PostgreSQL
-  Compatible con: Docker, Render, Railway, Local
+  Flask + PostgreSQL  (Supabase + Render)
 ============================================================
 """
 
@@ -23,11 +22,11 @@ from psycopg2.extras import RealDictCursor
 from psycopg2 import errors as pg_errors
 
 # ============================================================
-#  CONFIGURACIÓN DE LA APLICACIÓN
+#  CONFIGURACIÓN
 # ============================================================
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}, r"/login": {"origins": "*"}})
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB límite
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 
 # ============================================================
@@ -35,18 +34,11 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB límite
 # ============================================================
 def get_db():
     db_url = os.environ.get('DATABASE_URL')
-
-    base = {
-        'cursor_factory': RealDictCursor,
-        'connect_timeout': 10,
-    }
+    base = {'cursor_factory': RealDictCursor, 'connect_timeout': 10}
 
     if db_url:
         u = urlparse(db_url)
-        host    = u.hostname
-        port    = u.port or 5432
-        dbname  = (u.path or '').lstrip('/')
-
+        host, port, dbname = u.hostname, u.port or 5432, (u.path or '').lstrip('/')
         ip4 = None
         try:
             infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
@@ -57,14 +49,11 @@ def get_db():
 
         estrategias = []
         if ip4:
-            estrategias.append(dict(host=host, hostaddr=ip4, port=port,
-                                    user=u.username, password=u.password,
+            estrategias.append(dict(host=host, hostaddr=ip4, port=port, user=u.username,
+                                    password=u.password, dbname=dbname, sslmode='require'))
+            estrategias.append(dict(host=ip4, port=port, user=u.username, password=u.password,
                                     dbname=dbname, sslmode='require'))
-            estrategias.append(dict(host=ip4, port=port,
-                                    user=u.username, password=u.password,
-                                    dbname=dbname, sslmode='require'))
-        estrategias.append(dict(host=host, port=port,
-                                user=u.username, password=u.password,
+        estrategias.append(dict(host=host, port=port, user=u.username, password=u.password,
                                 dbname=dbname, sslmode='require'))
 
         for i, kw in enumerate(estrategias):
@@ -76,13 +65,8 @@ def get_db():
         return None
 
     try:
-        return psycopg2.connect(
-            host="postgres",
-            database="familychancay",
-            user="chancay",
-            password="chancay_123",
-            **base
-        )
+        return psycopg2.connect(host="postgres", database="familychancay", user="chancay",
+                                password="chancay_123", **base)
     except Exception as e:
         print(f"❌ ERROR DB Local: {e}")
         return None
@@ -110,10 +94,7 @@ def serializar(rows):
 
 def tabla_existe(cur, tabla):
     try:
-        cur.execute(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=%s)",
-            (tabla,)
-        )
+        cur.execute("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=%s)", (tabla,))
         return cur.fetchone()['exists']
     except Exception:
         return False
@@ -123,10 +104,7 @@ def columnas_de(cur, tabla):
     if not tabla_existe(cur, tabla):
         return []
     try:
-        cur.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name=%s",
-            (tabla,)
-        )
+        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s", (tabla,))
         return [r['column_name'] for r in cur.fetchall()]
     except Exception:
         return []
@@ -134,22 +112,17 @@ def columnas_de(cur, tabla):
 
 def guardar_inventario(cur, sucursal_id, producto_id, variante_id, stock):
     queries = [
-        ("INSERT INTO inventario (sucursal_id,producto_id,variante_id,stock_actual,stock_minimo,ubicacion_fisica) "
-         "VALUES (%s,%s,%s,%s,5,%s)",
+        ("INSERT INTO inventario (sucursal_id,producto_id,variante_id,stock_actual,stock_minimo,ubicacion_fisica) VALUES (%s,%s,%s,%s,5,%s)",
          (sucursal_id, producto_id, variante_id, stock, f'Estante-A-{producto_id}')),
-        ("INSERT INTO inventario (sucursal_id,producto_id,stock_actual,stock_minimo,ubicacion_fisica) "
-         "VALUES (%s,%s,%s,5,%s)",
+        ("INSERT INTO inventario (sucursal_id,producto_id,stock_actual,stock_minimo,ubicacion_fisica) VALUES (%s,%s,%s,5,%s)",
          (sucursal_id, producto_id, stock, f'Estante-A-{producto_id}')),
-        ("INSERT INTO inventario (sucursal_id,variante_id,stock_actual,stock_minimo,ubicacion_fisica) "
-         "VALUES (%s,%s,%s,5,%s)",
+        ("INSERT INTO inventario (sucursal_id,variante_id,stock_actual,stock_minimo,ubicacion_fisica) VALUES (%s,%s,%s,5,%s)",
          (sucursal_id, variante_id, stock, f'Estante-A-{producto_id}')),
     ]
     for sql, args in queries:
         try:
             cur.execute(sql, args)
             return True
-        except pg_errors.ForeignKeyViolation:
-            continue
         except Exception:
             continue
     return False
@@ -157,11 +130,9 @@ def guardar_inventario(cur, sucursal_id, producto_id, variante_id, stock):
 
 def actualizar_inventario(cur, producto_id, variante_id, stock):
     try:
-        cur.execute("UPDATE inventario SET stock_actual=%s WHERE producto_id=%s",
-                    (stock, producto_id))
+        cur.execute("UPDATE inventario SET stock_actual=%s WHERE producto_id=%s", (stock, producto_id))
         if cur.rowcount == 0 and variante_id:
-            cur.execute("UPDATE inventario SET stock_actual=%s WHERE variante_id=%s",
-                        (stock, variante_id))
+            cur.execute("UPDATE inventario SET stock_actual=%s WHERE variante_id=%s", (stock, variante_id))
         if cur.rowcount == 0:
             guardar_inventario(cur, 1, producto_id, variante_id, stock)
     except Exception as e:
@@ -196,6 +167,17 @@ def init_schema():
             cur.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen TEXT;")
         if tabla_existe(cur, 'inventario'):
             cur.execute("ALTER TABLE inventario ADD COLUMN IF NOT EXISTS stock_actual INT DEFAULT 0;")
+        # Tabla de usuarios (registro/login web)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                usuario_id SERIAL PRIMARY KEY,
+                nombre VARCHAR(150) NOT NULL,
+                email VARCHAR(150) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                estado BIT DEFAULT B'1'
+            )
+        """)
         conn.commit()
         print("✅ Schema verificado / actualizado correctamente")
     except Exception as e:
@@ -207,18 +189,20 @@ def init_schema():
 
 
 # ============================================================
-#  ENDPOINTS – SALUD Y LOGIN
+#  SALUD, LOGIN ADMIN Y RUTA RAÍZ
 # ============================================================
+@app.route('/')
+def home():
+    return jsonify({"status": "ok", "mensaje": "API Family Chancay funcionando"})
+
+
 @app.route('/api/health', methods=['GET'])
 def health():
     conn = get_db()
     ok = conn is not None
     if conn:
         conn.close()
-    return jsonify({
-        "status": "ok" if ok else "db_down",
-        "timestamp": datetime.now().isoformat()
-    })
+    return jsonify({"status": "ok" if ok else "db_down", "timestamp": datetime.now().isoformat()})
 
 
 @app.route('/login', methods=['POST'])
@@ -230,7 +214,80 @@ def login():
 
 
 # ============================================================
-#  CATÁLOGOS
+#  REGISTRO Y LOGIN DE USUARIOS WEB
+# ============================================================
+@app.route('/api/registro', methods=['POST', 'OPTIONS'])
+def registro_usuario():
+    if request.method == 'OPTIONS':
+        return '', 204
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+
+    d = request.get_json(silent=True) or {}
+    nombre = (d.get('nombre') or '').strip()
+    email = (d.get('email') or '').strip().lower()
+    passw = (d.get('password') or '').strip()
+
+    if not nombre or not email or not passw:
+        return jsonify({"error": "Nombre, email y contraseña son obligatorios"}), 400
+
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT usuario_id FROM usuarios WHERE LOWER(email) = LOWER(%s)", (email,))
+        if cur.fetchone():
+            return jsonify({"error": "Ya existe una cuenta con ese correo"}), 409
+
+        cur.execute("INSERT INTO usuarios (nombre, email, password) VALUES (%s, %s, %s) RETURNING usuario_id",
+                    (nombre, email, passw))
+        uid = cur.fetchone()['usuario_id']
+        conn.commit()
+        return jsonify({"status": "ok", "usuario_id": uid, "nombre": nombre}), 201
+    except pg_errors.UniqueViolation:
+        conn.rollback()
+        return jsonify({"error": "Ya existe una cuenta con ese correo"}), 409
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error registro: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route('/api/login', methods=['POST', 'OPTIONS'])
+def login_usuario():
+    if request.method == 'OPTIONS':
+        return '', 204
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+
+    d = request.get_json(silent=True) or {}
+    email = (d.get('email') or '').strip().lower()
+    passw = (d.get('password') or '').strip()
+
+    cur = conn.cursor()
+    try:
+        if not tabla_existe(cur, 'usuarios'):
+            return jsonify({"error": "No hay usuarios registrados"}), 404
+        cur.execute("SELECT usuario_id, nombre, email FROM usuarios WHERE LOWER(email)=LOWER(%s) AND password=%s",
+                    (email, passw))
+        u = cur.fetchone()
+        if not u:
+            return jsonify({"error": "Correo o contraseña incorrectos"}), 401
+        return jsonify({"status": "ok", "usuario_id": u['usuario_id'], "nombre": u['nombre'], "email": u['email']}), 200
+    except Exception as e:
+        print(f"❌ Error login: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ============================================================
+#  CATÁLOGOS  (sin alias -> estado = B'1')
 # ============================================================
 @app.route('/api/catalogos', methods=['GET'])
 def get_catalogos():
@@ -241,13 +298,13 @@ def get_catalogos():
     try:
         cats, marcas, sucursales = [], [], []
         if tabla_existe(cur, 'categorias'):
-            cur.execute("SELECT categoria_id, nombre FROM categorias WHERE estado=TRUE ORDER BY categoria_id")
+            cur.execute("SELECT categoria_id, nombre FROM categorias WHERE estado = B'1' ORDER BY categoria_id")
             cats = serializar(cur.fetchall())
         if tabla_existe(cur, 'marcas'):
-            cur.execute("SELECT marca_id, nombre FROM marcas WHERE estado=TRUE ORDER BY marca_id")
+            cur.execute("SELECT marca_id, nombre FROM marcas WHERE estado = B'1' ORDER BY marca_id")
             marcas = serializar(cur.fetchall())
         if tabla_existe(cur, 'sucursales'):
-            cur.execute("SELECT sucursal_id, nombre FROM sucursales WHERE estado=TRUE ORDER BY sucursal_id")
+            cur.execute("SELECT sucursal_id, nombre FROM sucursales WHERE estado = B'1' ORDER BY sucursal_id")
             sucursales = serializar(cur.fetchall())
         return jsonify({"categorias": cats, "marcas": marcas, "sucursales": sucursales})
     except Exception as e:
@@ -258,7 +315,7 @@ def get_catalogos():
 
 
 # ============================================================
-#  PRODUCTOS  (CRUD)
+#  PRODUCTOS  (alias p -> p.estado = B'1')
 # ============================================================
 @app.route('/api/productos', methods=['GET'])
 def get_productos():
@@ -267,7 +324,7 @@ def get_productos():
         return jsonify({"error": "DB Down"}), 503
 
     categoria = request.args.get('categoria', '')
-    busqueda  = request.args.get('q', '')
+    busqueda = request.args.get('q', '')
     cur = conn.cursor()
 
     query = """
@@ -278,7 +335,7 @@ def get_productos():
         FROM productos p
         LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
         LEFT JOIN marcas m     ON p.marca_id     = m.marca_id
-        WHERE p.estado = TRUE
+        WHERE p.estado = B'1'
     """
     params = []
     if categoria and categoria.lower() != 'todos':
@@ -321,10 +378,10 @@ def get_producto(pid):
             return jsonify({"error": "Producto no encontrado"}), 404
 
         d = serializar([p])[0]
-        d['talla']       = ''
-        d['color']       = ''
+        d['talla'] = ''
+        d['color'] = ''
         d['variante_id'] = None
-        d['stock']       = obtener_stock(cur, pid)
+        d['stock'] = obtener_stock(cur, pid)
 
         if tabla_existe(cur, 'producto_variantes'):
             cols = columnas_de(cur, 'producto_variantes')
@@ -332,8 +389,8 @@ def get_producto(pid):
                 cur.execute("SELECT variante_id, talla, color FROM producto_variantes WHERE producto_id=%s LIMIT 1", (pid,))
                 v = cur.fetchone()
                 if v:
-                    d['talla']       = v.get('talla', '') or ''
-                    d['color']       = v.get('color', '') or ''
+                    d['talla'] = v.get('talla', '') or ''
+                    d['color'] = v.get('color', '') or ''
                     d['variante_id'] = v.get('variante_id')
         return jsonify(d)
     except Exception as e:
@@ -354,22 +411,22 @@ def crear_producto():
     if not nombre:
         return jsonify({"error": "El nombre es obligatorio"}), 400
 
-    codigo  = (d.get('codigo') or '').strip() or f"AUTO-{int(time.time())}{random.randint(10, 99)}"
-    cat_id  = int(d.get('categoria_id') or 1)
-    mar_id  = int(d.get('marca_id') or 1)
-    precio  = float(d.get('precio') or 0)
-    talla   = (d.get('talla') or '').strip() or 'U'
-    color   = (d.get('color') or '').strip() or 'N/A'
-    stock   = int(d.get('stock') or 0)
-    imagen  = d.get('imagen') or None
-    desc    = d.get('descripcion') or ''
+    codigo = (d.get('codigo') or '').strip() or f"AUTO-{int(time.time())}{random.randint(10, 99)}"
+    cat_id = int(d.get('categoria_id') or 1)
+    mar_id = int(d.get('marca_id') or 1)
+    precio = float(d.get('precio') or 0)
+    talla = (d.get('talla') or '').strip() or 'U'
+    color = (d.get('color') or '').strip() or 'N/A'
+    stock = int(d.get('stock') or 0)
+    imagen = d.get('imagen') or None
+    desc = d.get('descripcion') or ''
 
     cur = conn.cursor()
     try:
         cur.execute("""
             INSERT INTO productos (categoria_id, marca_id, codigo_producto, nombre,
                                    descripcion, precio_venta_base, iva, imagen, estado)
-            VALUES (%s,%s,%s,%s,%s,%s,18,%s,TRUE)
+            VALUES (%s,%s,%s,%s,%s,%s,18,%s,B'1')
             RETURNING producto_id
         """, (cat_id, mar_id, codigo, nombre, desc, precio, imagen))
         pid = cur.fetchone()['producto_id']
@@ -381,9 +438,8 @@ def crear_producto():
             if 'producto_id' in cols:
                 cur.execute("""
                     INSERT INTO producto_variantes
-                        (producto_id, sku, talla, color, modelo,
-                         anio, genero, equipo, temporada, tipo_uniforme, precio, estado)
-                    VALUES (%s,%s,%s,%s,%s,'2026','Unisex','N/A','2026','General',%s,TRUE)
+                        (producto_id, sku, talla, color, modelo, anio, genero, equipo, temporada, tipo_uniforme, precio, estado)
+                    VALUES (%s,%s,%s,%s,%s,'2026','Unisex','N/A','2026','General',%s,B'1')
                     RETURNING variante_id
                 """, (pid, sku, talla, color, nombre, precio))
                 vid = cur.fetchone()['variante_id']
@@ -409,16 +465,16 @@ def actualizar_producto(pid):
     if not conn:
         return jsonify({"error": "DB Down"}), 503
 
-    d   = request.get_json(silent=True) or {}
+    d = request.get_json(silent=True) or {}
     cur = conn.cursor()
     try:
         sets, params = [], []
-        if 'nombre'       in d: sets.append("nombre=%s");             params.append(d['nombre'])
-        if 'precio'       in d: sets.append("precio_venta_base=%s");  params.append(float(d['precio']))
-        if 'categoria_id' in d: sets.append("categoria_id=%s");       params.append(int(d['categoria_id']))
-        if 'marca_id'     in d: sets.append("marca_id=%s");           params.append(int(d['marca_id']))
-        if 'descripcion'  in d: sets.append("descripcion=%s");        params.append(d['descripcion'])
-        if 'imagen'       in d: sets.append("imagen=%s");             params.append(d['imagen'])
+        if 'nombre' in d:       sets.append("nombre=%s");            params.append(d['nombre'])
+        if 'precio' in d:       sets.append("precio_venta_base=%s"); params.append(float(d['precio']))
+        if 'categoria_id' in d: sets.append("categoria_id=%s");      params.append(int(d['categoria_id']))
+        if 'marca_id' in d:     sets.append("marca_id=%s");          params.append(int(d['marca_id']))
+        if 'descripcion' in d:  sets.append("descripcion=%s");       params.append(d['descripcion'])
+        if 'imagen' in d:       sets.append("imagen=%s");            params.append(d['imagen'])
         if sets:
             params.append(pid)
             cur.execute(f"UPDATE productos SET {', '.join(sets)} WHERE producto_id=%s", params)
@@ -430,8 +486,8 @@ def actualizar_producto(pid):
             if vr:
                 vid = vr['variante_id']
                 vsets, vparams = [], []
-                if talla    is not None: vsets.append("talla=%s");  vparams.append(talla)
-                if color    is not None: vsets.append("color=%s");  vparams.append(color)
+                if talla is not None:    vsets.append("talla=%s");  vparams.append(talla)
+                if color is not None:    vsets.append("color=%s");  vparams.append(color)
                 if precio_v is not None: vsets.append("precio=%s"); vparams.append(float(precio_v))
                 if vsets:
                     vparams.append(vid)
@@ -456,7 +512,7 @@ def eliminar_producto(pid):
         return jsonify({"error": "DB Down"}), 503
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE productos SET estado=FALSE WHERE producto_id=%s", (pid,))
+        cur.execute("UPDATE productos SET estado=B'0' WHERE producto_id=%s", (pid,))
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -476,7 +532,7 @@ def get_ventas():
     if not conn:
         return jsonify({"error": "DB Down"}), 503
 
-    busqueda  = request.args.get('q', '')
+    busqueda = request.args.get('q', '')
     fecha_ini = request.args.get('fecha_inicio', '')
     fecha_fin = request.args.get('fecha_fin', '')
     cur = conn.cursor()
@@ -501,11 +557,9 @@ def get_ventas():
         query += " AND (v.numero_venta ILIKE %s OR cl.nombres ILIKE %s OR cl.apellidos ILIKE %s)"
         params.extend([f"%{busqueda}%", f"%{busqueda}%", f"%{busqueda}%"])
     if fecha_ini:
-        query += " AND v.fecha_venta >= %s"
-        params.append(fecha_ini)
+        query += " AND v.fecha_venta >= %s"; params.append(fecha_ini)
     if fecha_fin:
-        query += " AND v.fecha_venta <= %s"
-        params.append(fecha_fin + ' 23:59:59')
+        query += " AND v.fecha_venta <= %s"; params.append(fecha_fin + ' 23:59:59')
     query += " ORDER BY v.fecha_venta DESC LIMIT 100"
 
     try:
@@ -528,23 +582,20 @@ def crear_venta():
     d = request.get_json(silent=True) or {}
     cur = conn.cursor()
     try:
-        cliente_id     = int(d.get('cliente_id') or 1)
-        empleado_id    = int(d.get('empleado_id') or 1)
+        cliente_id = int(d.get('cliente_id') or 1)
+        empleado_id = int(d.get('empleado_id') or 1)
         metodo_pago_id = int(d.get('metodo_pago_id') or 1)
-        sucursal_id    = int(d.get('sucursal_id') or 1)
-        detalles       = d.get('detalles') or []
+        sucursal_id = int(d.get('sucursal_id') or 1)
+        detalles = d.get('detalles') or []
         if not detalles:
             return jsonify({"error": "Se requiere al menos un detalle de producto"}), 400
 
         numero_venta = f"V-{int(time.time())}{random.randint(100, 999)}"
-        total = 0.0
-        for det in detalles:
-            total += float(det.get('precio') or 0) * int(det.get('cantidad') or 1)
+        total = sum(float(det.get('precio') or 0) * int(det.get('cantidad') or 1) for det in detalles)
 
         cur.execute("""INSERT INTO ventas (numero_venta, cliente_id, empleado_id,
                    metodo_pago_id, sucursal_id, total, estado_venta, fecha_venta)
-                   VALUES (%s,%s,%s,%s,%s,%s,'COMPLETADA', NOW())
-                   RETURNING venta_id""",
+                   VALUES (%s,%s,%s,%s,%s,%s,'COMPLETADA', NOW()) RETURNING venta_id""",
                     (numero_venta, cliente_id, empleado_id, metodo_pago_id, sucursal_id, total))
         venta_id = cur.fetchone()['venta_id']
 
@@ -552,20 +603,19 @@ def crear_venta():
         for det in detalles:
             producto_id = int(det.get('producto_id') or 0)
             variante_id = det.get('variante_id') or None
-            cantidad    = int(det.get('cantidad') or 1)
-            precio_u    = float(det.get('precio') or 0)
-            subtotal    = precio_u * cantidad
+            cantidad = int(det.get('cantidad') or 1)
+            precio_u = float(det.get('precio') or 0)
+            subtotal = precio_u * cantidad
             if 'venta_id' in cols_dv and 'producto_id' in cols_dv:
                 try:
                     cur.execute("""INSERT INTO detalle_ventas
                        (venta_id, producto_id, variante_id, cantidad, precio_unitario, subtotal)
                        VALUES (%s,%s,%s,%s,%s,%s)""",
-                        (venta_id, producto_id, variante_id, cantidad, precio_u, subtotal))
+                                (venta_id, producto_id, variante_id, cantidad, precio_u, subtotal))
                 except Exception:
                     cur.execute("""INSERT INTO detalle_ventas
-                        (venta_id, producto_id, cantidad, precio_unitario, subtotal)
-                        VALUES (%s,%s,%s,%s,%s)""",
-                        (venta_id, producto_id, cantidad, precio_u, subtotal))
+                        (venta_id, producto_id, cantidad, precio_unitario, subtotal) VALUES (%s,%s,%s,%s,%s)""",
+                                (venta_id, producto_id, cantidad, precio_u, subtotal))
             try:
                 cur.execute("UPDATE inventario SET stock_actual = GREATEST(stock_actual - %s, 0) WHERE producto_id = %s",
                             (cantidad, producto_id))
@@ -587,7 +637,7 @@ def crear_venta():
 
 
 # ============================================================
-#  PEDIDOS WEB  (endpoint que usa el frontend Netlify)
+#  PEDIDOS WEB  (frontend Netlify)
 # ============================================================
 @app.route('/api/pedidos', methods=['POST', 'OPTIONS'])
 def crear_pedido_web():
@@ -598,17 +648,17 @@ def crear_pedido_web():
     if not conn:
         return jsonify({"error": "DB Down"}), 503
 
-    d   = request.get_json(silent=True) or {}
+    d = request.get_json(silent=True) or {}
     cur = conn.cursor()
 
     try:
-        nombre    = (d.get('cliente')  or 'Cliente Web').strip()
-        telefono  = (d.get('telefono') or '').strip()
+        nombre = (d.get('cliente') or 'Cliente Web').strip()
+        telefono = (d.get('telefono') or '').strip()
         direccion = (d.get('direccion') or '').strip()
-        ciudad    = (d.get('ciudad')    or '').strip()
+        ciudad = (d.get('ciudad') or '').strip()
         provincia = (d.get('provincia') or '').strip()
-        pago      = (d.get('metodo_pago') or 'TRANSFERENCIA').upper()
-        items     = d.get('items') or d.get('productos') or []
+        pago = (d.get('metodo_pago') or 'TRANSFERENCIA').upper()
+        items = d.get('items') or d.get('productos') or []
 
         if not items:
             return jsonify({"error": "Carrito vacío"}), 400
@@ -648,15 +698,14 @@ def crear_pedido_web():
         metodo_id = 1
         if tabla_existe(cur, 'metodos_pago'):
             try:
-                cur.execute("SELECT metodo_pago_id FROM metodos_pago WHERE UPPER(nombre_metodo) LIKE %s LIMIT 1",
-                            (f"%{pago}%",))
+                cur.execute("SELECT metodo_pago_id FROM metodos_pago WHERE UPPER(nombre_metodo) LIKE %s LIMIT 1", (f"%{pago}%",))
                 r = cur.fetchone()
                 if r:
                     metodo_id = r['metodo_pago_id']
             except Exception:
                 pass
 
-        # ---- 3. Total (tolerante: acepta dicts o ignora strings) ----
+        # ---- 3. Total ----
         total = 0.0
         for it in items:
             if isinstance(it, dict):
@@ -668,15 +717,15 @@ def crear_pedido_web():
         num = f"WEB-{int(time.time())}"
         cols_v = columnas_de(cur, 'ventas')
         cv, vv = [], []
-        if 'numero_venta'   in cols_v: cv.append("numero_venta");   vv.append(num)
-        if 'fecha_venta'    in cols_v: cv.append("fecha_venta");    vv.append(datetime.now())
-        if 'total'          in cols_v: cv.append("total");          vv.append(total)
-        if 'subtotal'       in cols_v: cv.append("subtotal");       vv.append(total)
-        if 'descuento'      in cols_v: cv.append("descuento");      vv.append(0)
-        if 'estado_venta'   in cols_v: cv.append("estado_venta");   vv.append('PENDIENTE')
-        if 'cliente_id'     in cols_v and cliente_id: cv.append("cliente_id");     vv.append(cliente_id)
-        if 'sucursal_id'    in cols_v: cv.append("sucursal_id");    vv.append(1)
-        if 'empleado_id'    in cols_v: cv.append("empleado_id");    vv.append(1)
+        if 'numero_venta' in cols_v:   cv.append("numero_venta");   vv.append(num)
+        if 'fecha_venta' in cols_v:    cv.append("fecha_venta");    vv.append(datetime.now())
+        if 'total' in cols_v:          cv.append("total");          vv.append(total)
+        if 'subtotal' in cols_v:       cv.append("subtotal");       vv.append(total)
+        if 'descuento' in cols_v:      cv.append("descuento");      vv.append(0)
+        if 'estado_venta' in cols_v:   cv.append("estado_venta");   vv.append('PENDIENTE')
+        if 'cliente_id' in cols_v and cliente_id: cv.append("cliente_id"); vv.append(cliente_id)
+        if 'sucursal_id' in cols_v:    cv.append("sucursal_id");    vv.append(1)
+        if 'empleado_id' in cols_v:    cv.append("empleado_id");    vv.append(1)
         if 'metodo_pago_id' in cols_v: cv.append("metodo_pago_id"); vv.append(metodo_id)
 
         ph = ', '.join(['%s'] * len(vv))
@@ -689,10 +738,10 @@ def crear_pedido_web():
             for it in items:
                 if not isinstance(it, dict):
                     continue
-                pu   = float(it.get('precio') or it.get('price') or 0)
+                pu = float(it.get('precio') or it.get('price') or 0)
                 cant = int(it.get('cantidad') or it.get('quantity') or 1)
-                pid  = it.get('producto_id') or it.get('id')
-                vid  = it.get('variante_id')
+                pid = it.get('producto_id') or it.get('id')
+                vid = it.get('variante_id')
                 cd, vd = ["venta_id"], [venta_id]
                 if 'producto_id' in cols_dv and pid: cd.append("producto_id"); vd.append(pid)
                 if 'variante_id' in cols_dv and vid: cd.append("variante_id"); vd.append(vid)
@@ -706,8 +755,7 @@ def crear_pedido_web():
                     print(f"⚠️ Detalle falló: {e}")
                 if pid and tabla_existe(cur, 'inventario'):
                     try:
-                        cur.execute("UPDATE inventario SET stock_actual=GREATEST(stock_actual-%s,0) WHERE producto_id=%s",
-                                    (cant, pid))
+                        cur.execute("UPDATE inventario SET stock_actual=GREATEST(stock_actual-%s,0) WHERE producto_id=%s", (cant, pid))
                     except Exception:
                         pass
 
@@ -725,7 +773,7 @@ def crear_pedido_web():
 
 
 # ============================================================
-#  CLIENTES
+#  CLIENTES  (sin alias -> estado = B'1')
 # ============================================================
 @app.route('/api/clientes', methods=['GET'])
 def get_clientes():
@@ -738,13 +786,10 @@ def get_clientes():
             return jsonify([])
         cols = columnas_de(cur, 'clientes')
         campos = "cliente_id, nombres, apellidos"
-        if 'telefono' in cols:
-            campos += ", telefono"
-        if 'correo' in cols:
-            campos += ", correo"
-        if 'cedula_ruc' in cols:
-            campos += ", cedula_ruc"
-        cur.execute(f"SELECT {campos} FROM clientes WHERE estado=TRUE ORDER BY nombres LIMIT 200")
+        if 'telefono' in cols:   campos += ", telefono"
+        if 'correo' in cols:     campos += ", correo"
+        if 'cedula_ruc' in cols: campos += ", cedula_ruc"
+        cur.execute(f"SELECT {campos} FROM clientes WHERE estado = B'1' ORDER BY nombres LIMIT 200")
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -765,18 +810,13 @@ def crear_cliente():
     cur = conn.cursor()
     try:
         cols = columnas_de(cur, 'clientes')
-        campos  = ["nombres", "apellidos"]
+        campos = ["nombres", "apellidos"]
         valores = [nombres, (d.get('apellidos') or '')]
-        if 'estado' in cols:
-            campos.append("estado"); valores.append('1')
-        if 'cedula_ruc' in cols:
-            campos.append("cedula_ruc");   valores.append(d.get('cedula_ruc') or '')
-        if 'telefono' in cols:
-            campos.append("telefono");      valores.append(d.get('telefono') or '')
-        if 'correo' in cols:
-            campos.append("correo");        valores.append(d.get('correo') or '')
-        if 'direccion' in cols:
-            campos.append("direccion");     valores.append(d.get('direccion') or '')
+        if 'estado' in cols:     campos.append("estado");     valores.append('1')
+        if 'cedula_ruc' in cols: campos.append("cedula_ruc"); valores.append(d.get('cedula_ruc') or '')
+        if 'telefono' in cols:   campos.append("telefono");   valores.append(d.get('telefono') or '')
+        if 'correo' in cols:     campos.append("correo");     valores.append(d.get('correo') or '')
+        if 'direccion' in cols:  campos.append("direccion");  valores.append(d.get('direccion') or '')
         placeholders = ', '.join(['%s'] * len(valores))
         cur.execute(f"INSERT INTO clientes ({','.join(campos)}) VALUES ({placeholders}) RETURNING cliente_id", valores)
         cid = cur.fetchone()['cliente_id']
@@ -791,7 +831,7 @@ def crear_cliente():
 
 
 # ============================================================
-#  EMPLEADOS
+#  EMPLEADOS  (alias e -> e.estado = B'1')
 # ============================================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
@@ -802,21 +842,19 @@ def get_empleados():
     try:
         if not tabla_existe(cur, 'empleados'):
             return jsonify([])
-        has_roles     = tabla_existe(cur, 'roles')
+        has_roles = tabla_existe(cur, 'roles')
         has_sucursales = tabla_existe(cur, 'sucursales')
         query = "SELECT e.empleado_id, e.codigo_empleado, e.nombres, e.apellidos, e.telefono, e.correo"
         joins = ""
         if has_roles:
-            query += ", r.nombre_rol AS rol"
-            joins += " JOIN roles r ON e.rol_id = r.rol_id"
+            query += ", r.nombre_rol AS rol"; joins += " JOIN roles r ON e.rol_id = r.rol_id"
         else:
             query += ", NULL AS rol"
         if has_sucursales:
-            query += ", s.nombre AS sucursal"
-            joins += " JOIN sucursales s ON e.sucursal_id = s.sucursal_id"
+            query += ", s.nombre AS sucursal"; joins += " JOIN sucursales s ON e.sucursal_id = s.sucursal_id"
         else:
             query += ", NULL AS sucursal"
-        query += f" FROM empleados e {joins} WHERE e.estado=TRUE ORDER BY e.empleado_id"
+        query += f" FROM empleados e {joins} WHERE e.estado = B'1' ORDER BY e.empleado_id"
         cur.execute(query)
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
@@ -827,7 +865,7 @@ def get_empleados():
 
 
 # ============================================================
-#  PROVEEDORES
+#  PROVEEDORES  (sin alias -> estado = B'1')
 # ============================================================
 @app.route('/api/proveedores', methods=['GET'])
 def get_proveedores():
@@ -839,13 +877,10 @@ def get_proveedores():
         if not tabla_existe(cur, 'proveedores'):
             return jsonify([])
         cols = columnas_de(cur, 'proveedores')
-        campos = []
-        for c in ['proveedor_id', 'ruc_dni', 'razon_social', 'contacto_nombre', 'telefono', 'correo', 'direccion']:
-            if c in cols:
-                campos.append(c)
+        campos = [c for c in ['proveedor_id', 'ruc_dni', 'razon_social', 'contacto_nombre', 'telefono', 'correo', 'direccion'] if c in cols]
         if not campos:
             return jsonify([])
-        cur.execute(f"SELECT {', '.join(campos)} FROM proveedores WHERE estado=TRUE ORDER BY 1 LIMIT 200")
+        cur.execute(f"SELECT {', '.join(campos)} FROM proveedores WHERE estado = B'1' ORDER BY 1 LIMIT 200")
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -855,7 +890,7 @@ def get_proveedores():
 
 
 # ============================================================
-#  SUCURSALES
+#  SUCURSALES  (sin alias -> estado = B'1')
 # ============================================================
 @app.route('/api/sucursales', methods=['GET'])
 def get_sucursales():
@@ -866,7 +901,7 @@ def get_sucursales():
     try:
         if not tabla_existe(cur, 'sucursales'):
             return jsonify([])
-        cur.execute("SELECT sucursal_id, nombre, direccion, telefono FROM sucursales WHERE estado=TRUE ORDER BY sucursal_id")
+        cur.execute("SELECT sucursal_id, nombre, direccion, telefono FROM sucursales WHERE estado = B'1' ORDER BY sucursal_id")
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -889,19 +924,14 @@ def get_kpis():
         if tabla_existe(cur, 'ventas'):
             cur.execute("SELECT COUNT(*) AS c, COALESCE(SUM(total),0) AS s FROM ventas WHERE estado_venta='COMPLETADA'")
             r = cur.fetchone()
-            total_ventas = r['c']
-            ingresos     = float(r['s'])
+            total_ventas = r['c']; ingresos = float(r['s'])
             cur.execute("SELECT COUNT(DISTINCT cliente_id) AS c FROM ventas")
             clientes = cur.fetchone()['c']
         if tabla_existe(cur, 'productos'):
-            cur.execute("SELECT COUNT(*) AS c FROM productos WHERE estado=TRUE")
+            cur.execute("SELECT COUNT(*) AS c FROM productos WHERE estado = B'1'")
             productos = cur.fetchone()['c']
-        return jsonify({
-            "total_ventas":     total_ventas,
-            "ingresos_totales": ingresos,
-            "clientes_activos": clientes,
-            "productos_activos": productos
-        })
+        return jsonify({"total_ventas": total_ventas, "ingresos_totales": ingresos,
+                        "clientes_activos": clientes, "productos_activos": productos})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -919,15 +949,10 @@ def get_ventas_mes():
         if not tabla_existe(cur, 'ventas'):
             return jsonify([])
         cur.execute("""
-            SELECT TO_CHAR(fecha_venta,'YYYY-MM') AS mes,
-                   COUNT(*)                          AS cantidad_ventas,
-                   SUM(total)                        AS total_facturado,
-                   COALESCE(AVG(total),0)            AS ticket_promedio
-            FROM ventas
-            WHERE estado_venta = 'COMPLETADA'
-            GROUP BY TO_CHAR(fecha_venta,'YYYY-MM')
-            ORDER BY mes DESC
-            LIMIT 6
+            SELECT TO_CHAR(fecha_venta,'YYYY-MM') AS mes, COUNT(*) AS cantidad_ventas,
+                   SUM(total) AS total_facturado, COALESCE(AVG(total),0) AS ticket_promedio
+            FROM ventas WHERE estado_venta = 'COMPLETADA'
+            GROUP BY TO_CHAR(fecha_venta,'YYYY-MM') ORDER BY mes DESC LIMIT 6
         """)
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
@@ -950,29 +975,23 @@ def get_top_productos():
         if 'producto_id' in cols:
             cur.execute("""
                 SELECT p.nombre AS producto, c.nombre AS categoria, m.nombre AS marca,
-                       SUM(dv.cantidad) AS unidades_vendidas,
-                       SUM(dv.subtotal) AS total_generado
+                       SUM(dv.cantidad) AS unidades_vendidas, SUM(dv.subtotal) AS total_generado
                 FROM detalle_ventas dv
-                JOIN productos p      ON dv.producto_id  = p.producto_id
+                JOIN productos p ON dv.producto_id = p.producto_id
                 LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
-                LEFT JOIN marcas m     ON p.marca_id     = m.marca_id
-                GROUP BY p.nombre, c.nombre, m.nombre
-                ORDER BY unidades_vendidas DESC
-                LIMIT 10
+                LEFT JOIN marcas m ON p.marca_id = m.marca_id
+                GROUP BY p.nombre, c.nombre, m.nombre ORDER BY unidades_vendidas DESC LIMIT 10
             """)
         elif 'variante_id' in cols:
             cur.execute("""
                 SELECT p.nombre AS producto, c.nombre AS categoria, m.nombre AS marca,
-                       SUM(dv.cantidad) AS unidades_vendidas,
-                       SUM(dv.subtotal) AS total_generado
+                       SUM(dv.cantidad) AS unidades_vendidas, SUM(dv.subtotal) AS total_generado
                 FROM detalle_ventas dv
-                JOIN producto_variantes pv ON dv.variante_id  = pv.variante_id
-                JOIN productos p           ON pv.producto_id  = p.producto_id
-                LEFT JOIN categorias c     ON p.categoria_id  = c.categoria_id
-                LEFT JOIN marcas m         ON p.marca_id      = m.marca_id
-                GROUP BY p.nombre, c.nombre, m.nombre
-                ORDER BY unidades_vendidas DESC
-                LIMIT 10
+                JOIN producto_variantes pv ON dv.variante_id = pv.variante_id
+                JOIN productos p ON pv.producto_id = p.producto_id
+                LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+                LEFT JOIN marcas m ON p.marca_id = m.marca_id
+                GROUP BY p.nombre, c.nombre, m.nombre ORDER BY unidades_vendidas DESC LIMIT 10
             """)
         else:
             return jsonify([])
