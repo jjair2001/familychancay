@@ -861,60 +861,74 @@
             }
         }
 
-        async function confirmOrder() {
+              async function confirmOrder() {
             const prov = document.getElementById('ship-provincia').value;
             const ciu = document.getElementById('ship-ciudad').value;
             const dir = document.getElementById('ship-dir1').value;
-            
+            const dir2 = document.getElementById('ship-dir2').value;
+            const ref = document.getElementById('ship-ref').value;
+
             if(!prov || !ciu || !dir) {
                 alert('Por favor completa la dirección de envío (Provincia, Ciudad y Dirección)');
                 return;
             }
 
-            // 1. Preparar datos del pedido
-            const totalText = document.getElementById('cart-total-price').innerText;
+            if(cart.length === 0) {
+                alert('Tu carrito está vacío');
+                return;
+            }
+
+            // Calcular total numérico
+            const totalNum = cart.reduce((sum, p) => sum + (parseFloat(p.price) || 0), 0);
+
+            // Construir lista de items COMPLETA (con id, precio, cantidad)
+            const items = cart.map(p => ({
+                producto_id: p.id,
+                nombre: p.name,
+                precio: parseFloat(p.price) || 0,
+                cantidad: 1
+            }));
+
+            // Datos del pedido
             const orderData = {
                 cliente: currentUser.name,
-                email: currentUser.email,
+                telefono: currentUser.telefono || '',
                 provincia: prov,
                 ciudad: ciu,
-                direccion: dir,
-                referencia: document.getElementById('ship-ref').value,
+                direccion: dir + (dir2 ? ', ' + dir2 : ''),
+                referencia: ref,
                 metodo_pago: selectedPayment,
-                total: totalText,
-                productos: cart.map(p => p.name).join(', '),
-                fecha: new Date().toISOString()
+                items: items,
+                total: totalNum
             };
 
-            // 2. Guardar en Base de Datos (API)
+            // Guardar en Base de Datos
             try {
-                await fetch(`${API_URL}/api/pedidos`, {
+                const resp = await fetch(`${API_URL}/api/pedidos`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(orderData)
                 });
-                console.log("Pedido guardado en DB");
+                const result = await resp.json();
+                console.log("Respuesta API:", result);
             } catch (error) {
                 console.error("Error guardando en DB:", error);
-                // Continuamos aunque falle la API para no bloquear la venta
             }
 
-            // 3. Construir mensaje de WhatsApp
-            let productosList = cart.map(p => `- ${p.name} (S/ ${p.price.toFixed(2)})`).join('%0A');
+            // Mensaje de WhatsApp
+            let productosList = cart.map(p => `- ${p.name} (S/ ${(parseFloat(p.price)||0).toFixed(2)})`).join('%0A');
             let msg = `🛍️ *NUEVO PEDIDO - FAMILY CHANCAY*%0A%0A`;
             msg += `👤 *Cliente:* ${currentUser.name}%0A`;
             msg += `📍 *Envío:* ${ciu}, ${prov}%0A`;
-            msg += `🏠 *Dirección:* ${dir}%0A`;
-            if(orderData.referencia) msg += `📝 *Ref:* ${orderData.referencia}%0A`;
+            msg += `🏠 *Dirección:* ${dir}${dir2 ? ', '+dir2 : ''}%0A`;
+            if(ref) msg += `📝 *Ref:* ${ref}%0A`;
             msg += `💳 *Pago:* ${selectedPayment.toUpperCase()}%0A`;
-            msg += `💰 *Total:* ${totalText}%0A%0A`;
+            msg += `💰 *Total:* S/ ${totalNum.toFixed(2)}%0A%0A`;
             msg += `📦 *Productos:*%0A${productosList}%0A%0A`;
             msg += `✅ _Pedido generado desde la web_`;
 
-            // 4. Abrir WhatsApp
             window.open(`https://wa.me/${ADMIN_WHATSAPP}?text=${msg}`, '_blank');
 
-            // 5. Limpiar carrito
             alert('¡Pedido confirmado! Se abrirá WhatsApp para finalizar.');
             cart = [];
             updateCartUI();
