@@ -167,7 +167,6 @@ def init_schema():
             cur.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen TEXT;")
         if tabla_existe(cur, 'inventario'):
             cur.execute("ALTER TABLE inventario ADD COLUMN IF NOT EXISTS stock_actual INT DEFAULT 0;")
-        # Tabla de usuarios (registro/login web)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 usuario_id SERIAL PRIMARY KEY,
@@ -237,7 +236,6 @@ def registro_usuario():
         cur.execute("SELECT usuario_id FROM usuarios WHERE LOWER(email) = LOWER(%s)", (email,))
         if cur.fetchone():
             return jsonify({"error": "Ya existe una cuenta con ese correo"}), 409
-
         cur.execute("INSERT INTO usuarios (nombre, email, password) VALUES (%s, %s, %s) RETURNING usuario_id",
                     (nombre, email, passw))
         uid = cur.fetchone()['usuario_id']
@@ -663,7 +661,6 @@ def crear_pedido_web():
         if not items:
             return jsonify({"error": "Carrito vacío"}), 400
 
-        # ---- 1. Cliente ----
         cliente_id = None
         if tabla_existe(cur, 'clientes'):
             cols_c = columnas_de(cur, 'clientes')
@@ -694,7 +691,6 @@ def crear_pedido_web():
                     cur.execute(f"INSERT INTO clientes ({','.join(campos)}) VALUES ({ph}) RETURNING cliente_id", vals)
                     cliente_id = cur.fetchone()['cliente_id']
 
-        # ---- 2. Método de pago ----
         metodo_id = 1
         if tabla_existe(cur, 'metodos_pago'):
             try:
@@ -705,7 +701,6 @@ def crear_pedido_web():
             except Exception:
                 pass
 
-        # ---- 3. Total ----
         total = 0.0
         for it in items:
             if isinstance(it, dict):
@@ -713,7 +708,6 @@ def crear_pedido_web():
                 ca = int(it.get('cantidad') or it.get('quantity') or it.get('cant') or 1)
                 total += pu * ca
 
-        # ---- 4. Venta ----
         num = f"WEB-{int(time.time())}"
         cols_v = columnas_de(cur, 'ventas')
         cv, vv = [], []
@@ -732,7 +726,6 @@ def crear_pedido_web():
         cur.execute(f"INSERT INTO ventas ({','.join(cv)}) VALUES ({ph}) RETURNING venta_id", vv)
         venta_id = cur.fetchone()['venta_id']
 
-        # ---- 5. Detalles + stock ----
         if tabla_existe(cur, 'detalle_ventas'):
             cols_dv = columnas_de(cur, 'detalle_ventas')
             for it in items:
@@ -765,6 +758,74 @@ def crear_pedido_web():
     except Exception as e:
         conn.rollback()
         print(f"❌ Error pedido web: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ============================================================
+#  FACTURAS / COMPRAS REALES (panel admin)
+# ============================================================
+@app.route('/api/facturas', methods=['GET'])
+def get_facturas():
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+    cur = conn.cursor()
+
+    busqueda = request.args.get('q', '')
+    fecha_ini = request.args.get('fecha_inicio', '')
+    fecha_fin = request.args.get('fecha_fin', '')
+
+    try:
+        if not all(tabla_existe(cur, t) for t in ['ventas', 'clientes']):
+            return jsonify([])
+
+        query = """
+            SELECT v.venta_id, v.numero_venta, v.fecha_venta, v.subtotal, v.descuento, v.total, v.estado_venta,
+                   COALESCE(cl.nombres,'') || ' ' || COALESCE(cl.apellidos,'') AS cliente,
+                   cl.telefono AS cliente_telefono, cl.direccion AS cliente_direccion,
+                   mp.nombre_metodo AS metodo_pago
+            FROM ventas v
+            LEFT JOIN clientes cl ON v.cliente_id = cl.cliente_id
+            LEFT JOIN metodos_pago mp ON v.metodo_pago_id = mp.metodo_pago_id
+            WHERE 1=1
+        """
+        params = []
+        if busqueda:
+            query += " AND (v.numero_venta ILIKE %s OR cl.nombres ILIKE %s OR cl.apellidos ILIKE %s)"
+            params.extend([f"%{busqueda}%", f"%{busqueda}%", f"%{busqueda}%"])
+        if fecha_ini:
+            query += " AND v.fecha_venta >= %s"; params.append(fecha_ini)
+        if fecha_fin:
+            query += " AND v.fecha_venta <= %s"; params.append(fecha_fin + ' 23:59:59')
+        query += " ORDER BY v.fecha_venta DESC LIMIT 200"
+
+        cur.execute(query, params)
+        facturas = serializar(cur.fetchall())
+
+        if tabla_existe(cur, 'detalle_ventas'):
+            for f in facturas:
+                cols_dv = columnas_de(cur, 'detalle_ventas')
+                if 'producto_id' in cols_dv:
+                    cur.execute("""
+                        SELECT dv.cantidad, dv.precio_unitario, dv.subtotal,
+                               COALESCE(p.nombre, 'Producto') AS producto,
+                               COALESCE(c.nombre, '') AS categoria
+                        FROM detalle_ventas dv
+                        LEFT JOIN productos p ON dv.producto_id = p.producto_id
+                        LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+                        WHERE dv.venta_id = %s
+                    """, (f['venta_id'],))
+                else:
+                    cur.execute("SELECT cantidad, precio_unitario, subtotal FROM detalle_ventas WHERE venta_id=%s", (f['venta_id'],))
+                f['detalles'] = serializar(cur.fetchall())
+
+        return jsonify(facturas)
+    except Exception as e:
+        print(f"Error Facturas: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     finally:
@@ -921,17 +982,22 @@ def get_kpis():
     cur = conn.cursor()
     try:
         total_ventas, ingresos, clientes, productos = 0, 0.0, 0, 0
+        hoy_ventas, hoy_ingresos = 0, 0.0
         if tabla_existe(cur, 'ventas'):
-            cur.execute("SELECT COUNT(*) AS c, COALESCE(SUM(total),0) AS s FROM ventas WHERE estado_venta='COMPLETADA'")
-            r = cur.fetchone()
-            total_ventas = r['c']; ingresos = float(r['s'])
+            cur.execute("SELECT COUNT(*) AS c, COALESCE(SUM(total),0) AS s FROM ventas")
+            r = cur.fetchone(); total_ventas = r['c']; ingresos = float(r['s'])
             cur.execute("SELECT COUNT(DISTINCT cliente_id) AS c FROM ventas")
             clientes = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) AS c, COALESCE(SUM(total),0) AS s FROM ventas WHERE fecha_venta::date = CURRENT_DATE")
+            r2 = cur.fetchone(); hoy_ventas = r2['c']; hoy_ingresos = float(r2['s'])
         if tabla_existe(cur, 'productos'):
             cur.execute("SELECT COUNT(*) AS c FROM productos WHERE estado = B'1'")
             productos = cur.fetchone()['c']
-        return jsonify({"total_ventas": total_ventas, "ingresos_totales": ingresos,
-                        "clientes_activos": clientes, "productos_activos": productos})
+        return jsonify({
+            "total_ventas": total_ventas, "ingresos_totales": ingresos,
+            "clientes_activos": clientes, "productos_activos": productos,
+            "hoy_ventas": hoy_ventas, "hoy_ingresos": hoy_ingresos
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -953,6 +1019,32 @@ def get_ventas_mes():
                    SUM(total) AS total_facturado, COALESCE(AVG(total),0) AS ticket_promedio
             FROM ventas WHERE estado_venta = 'COMPLETADA'
             GROUP BY TO_CHAR(fecha_venta,'YYYY-MM') ORDER BY mes DESC LIMIT 6
+        """)
+        return jsonify(serializar(cur.fetchall()))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route('/api/estadisticas/ventas-dia', methods=['GET'])
+def get_ventas_dia():
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "DB Down"}), 503
+    cur = conn.cursor()
+    try:
+        if not tabla_existe(cur, 'ventas'):
+            return jsonify([])
+        cur.execute("""
+            SELECT TO_CHAR(fecha_venta,'YYYY-MM-DD') AS dia,
+                   COUNT(*) AS cantidad_ventas,
+                   COALESCE(SUM(total),0) AS total_facturado
+            FROM ventas
+            WHERE fecha_venta >= CURRENT_DATE - INTERVAL '14 days'
+            GROUP BY TO_CHAR(fecha_venta,'YYYY-MM-DD')
+            ORDER BY dia ASC
         """)
         return jsonify(serializar(cur.fetchall()))
     except Exception as e:
