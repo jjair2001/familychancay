@@ -710,7 +710,12 @@ def crear_pedido_web():
                 pass
 
         # ---- 3. Total ----
-        total = sum(float(it.get('precio') or 0) * int(it.get('cantidad') or 1) for it in items)
+ def _precio(it):
+            if isinstance(it, dict):
+                return float(it.get('precio') or it.get('price') or it.get('precio_unitario') or 0)
+            return 0.0
+
+        def _cantidad(it):
 
         # ---- 4. Venta (tolerante) ----
         num = f"WEB-{int(time.time())}"
@@ -734,11 +739,11 @@ def crear_pedido_web():
         # ---- 5. Detalles + stock ----
         if tabla_existe(cur, 'detalle_ventas'):
             cols_dv = columnas_de(cur, 'detalle_ventas')
-            for it in items:
-                pu   = float(it.get('precio') or 0)
-                cant = int(it.get('cantidad') or 1)
-                pid  = it.get('producto_id') or it.get('id')
-                vid  = it.get('variante_id')
+                       for it in items:
+                pu   = _precio(it)
+                cant = _cantidad(it)
+                pid  = (it.get('producto_id') or it.get('id') or it.get('product_id')) if isinstance(it, dict) else None
+                vid  = (it.get('variante_id') or it.get('variant_id')) if isinstance(it, dict) else None
                 cd, vd = ["venta_id"], [venta_id]
                 if 'producto_id' in cols_dv and pid: cd.append("producto_id"); vd.append(pid)
                 if 'variante_id' in cols_dv and vid: cd.append("variante_id"); vd.append(vid)
@@ -755,18 +760,6 @@ def crear_pedido_web():
                         cur.execute("UPDATE inventario SET stock_actual=GREATEST(stock_actual-%s,0) WHERE producto_id=%s", (cant, pid))
                     except Exception:
                         pass
-
-        conn.commit()
-        return jsonify({"status":"ok","venta_id":venta_id,"numero_venta":num,"total":total}), 201
-
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ Error pedido web: {e}")
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cur.close()
-        conn.close()
 
 
 # ============================================================
