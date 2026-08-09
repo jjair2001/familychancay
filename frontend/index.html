@@ -860,8 +860,7 @@
                 info.innerHTML = '<i class="fas fa-university"></i> Transferencia bancaria. Tiempo: <strong>24-48 horas hábiles</strong>';
             }
         }
-
-              async function confirmOrder() {
+        async function confirmOrder() {
             const prov = document.getElementById('ship-provincia').value;
             const ciu = document.getElementById('ship-ciudad').value;
             const dir = document.getElementById('ship-dir1').value;
@@ -872,16 +871,13 @@
                 alert('Por favor completa la dirección de envío (Provincia, Ciudad y Dirección)');
                 return;
             }
-
             if(cart.length === 0) {
                 alert('Tu carrito está vacío');
                 return;
             }
 
-            // Calcular total numérico
             const totalNum = cart.reduce((sum, p) => sum + (parseFloat(p.price) || 0), 0);
 
-            // Construir lista de items COMPLETA (con id, precio, cantidad)
             const items = cart.map(p => ({
                 producto_id: p.id,
                 nombre: p.name,
@@ -889,7 +885,6 @@
                 cantidad: 1
             }));
 
-            // Datos del pedido
             const orderData = {
                 cliente: currentUser.name,
                 telefono: currentUser.telefono || '',
@@ -902,7 +897,6 @@
                 total: totalNum
             };
 
-            // Guardar en Base de Datos
             try {
                 const resp = await fetch(`${API_URL}/api/pedidos`, {
                     method: 'POST',
@@ -915,7 +909,6 @@
                 console.error("Error guardando en DB:", error);
             }
 
-            // Mensaje de WhatsApp
             let productosList = cart.map(p => `- ${p.name} (S/ ${(parseFloat(p.price)||0).toFixed(2)})`).join('%0A');
             let msg = `🛍️ *NUEVO PEDIDO - FAMILY CHANCAY*%0A%0A`;
             msg += `👤 *Cliente:* ${currentUser.name}%0A`;
