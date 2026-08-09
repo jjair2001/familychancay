@@ -692,7 +692,7 @@ def crear_pedido_web():
                 if 'correo' in cols_c:     campos.append("correo");     vals.append("")
                 if 'email' in cols_c:      campos.append("email");      vals.append("")
                 if 'direccion' in cols_c:  campos.append("direccion");  vals.append(f"{direccion}, {ciudad}, {provincia}".strip(", "))
-                if 'estado' in cols_c:     campos.append("estado");     vals.append(True)
+                if 'estado' in cols_c:     campos.append("estado");    vals.append('1')
 
                 if campos:
                     ph = ', '.join(['%s']*len(vals))
