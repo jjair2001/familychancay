@@ -709,13 +709,18 @@ def crear_pedido_web():
             except Exception:
                 pass
 
-        # ---- 3. Total ----
- def _precio(it):
+        # ---- 3. Total (tolerante) ----
+        def _precio(it):
             if isinstance(it, dict):
                 return float(it.get('precio') or it.get('price') or it.get('precio_unitario') or 0)
             return 0.0
 
         def _cantidad(it):
+            if isinstance(it, dict):
+                return int(it.get('cantidad') or it.get('quantity') or it.get('cant') or 1)
+            return 1
+
+        total = sum(_precio(it) * _cantidad(it) for it in items)
 
         # ---- 4. Venta (tolerante) ----
         num = f"WEB-{int(time.time())}"
@@ -736,14 +741,14 @@ def crear_pedido_web():
         cur.execute(f"INSERT INTO ventas ({','.join(cv)}) VALUES ({ph}) RETURNING venta_id", vv)
         venta_id = cur.fetchone()['venta_id']
 
-        # ---- 5. Detalles + stock ----
+             # ---- 5. Detalles + stock ----
         if tabla_existe(cur, 'detalle_ventas'):
             cols_dv = columnas_de(cur, 'detalle_ventas')
-                       for it in items:
+            for it in items:
                 pu   = _precio(it)
                 cant = _cantidad(it)
-                pid  = (it.get('producto_id') or it.get('id') or it.get('product_id')) if isinstance(it, dict) else None
-                vid  = (it.get('variante_id') or it.get('variant_id')) if isinstance(it, dict) else None
+                pid  = (it.get('producto_id') or it.get('id')) if isinstance(it, dict) else None
+                vid  = (it.get('variante_id')) if isinstance(it, dict) else None
                 cd, vd = ["venta_id"], [venta_id]
                 if 'producto_id' in cols_dv and pid: cd.append("producto_id"); vd.append(pid)
                 if 'variante_id' in cols_dv and vid: cd.append("variante_id"); vd.append(vid)
